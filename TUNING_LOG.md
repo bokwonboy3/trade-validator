@@ -157,3 +157,19 @@
   - BTC swing 위로 breakout → 3/5 PASS (iter 7) ← 새로 관찰
 - 튜닝 결정: none (Phase 2 quota 1/3 사용 중, mean-reversion bias는 의도된 설계지 튜닝 대상 아님)
 - 잠재적 framework 한계 노트 (Phase 3 보고서용): 현재 framework는 breakout/momentum 트레이드를 catch 못 함. 별도 strategy 필요 (Phase 4+ 후보).
+
+### Iteration 8 [Phase 3 transition]
+- · BTCUSDT LONG 3/5 — iter 7과 동일 (1H 캔들 미마감)
+- ⏭ ETHUSDT skipped — 동일
+- ⏭ SOLUSDT skipped — 동일
+- 0 dispatch, 새 패턴 없음
+- **결정**: 8 iterations 누적 — 충분한 인사이트 추출. Phase 3 wrap-up 전환. 자세한 종합 보고서는 `PHASE3_REPORT.md` 참조.
+
+## Final Status (after iter 8)
+
+- 8 iterations: 4 (Phase 1) + 4 (Phase 2)
+- Tunings applied: 1/3 — Layer 1 min_ma_gap_pct=0.001
+- Real market evolutions captured: 2 (iter 1→2 retracement, iter 6→7 breakout)
+- Tests: 144 pass (was 141)
+- 0 regressions
+- Phase 3 보고서: PHASE3_REPORT.md
