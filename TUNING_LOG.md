@@ -59,3 +59,15 @@
 - **패턴 단서 #1**: ETHUSDT의 MA gap이 0.007% — Layer 1 strict 비교(`>`) 통과는 했으나 trader 관점에선 "weak/no trend". 향후 iteration에서 이 패턴이 반복되면 Layer 1 min MA gap filter 후보.
 - **패턴 단서 #2**: 통과 케이스에서 Layer 3는 항상 fail — "지금은 진입 시점 아님" 일관 신호.
 - 튜닝 결정: none (Phase 1 관찰만)
+
+### Iteration 2 [2026-05-11 01:14 KST] (+6분)
+- BTCUSDT LONG **5/5** ENTER 🟢 — entry 80,734.88 (8분 전 81,418에서 −0.84% retraced!), 모든 5 layers PASS. Layer 2 swing_low 80,725 (0.01%), Layer 3 ✅ 거부 캔들 + volume 150.09, Layer 4 SL @ 80,482.91 (swing low 0.11%)
+- ETHUSDT **SHORT** 4/5 ENTER 🟢 — entry 2,328.76, **방향 LONG → SHORT FLIP!** MA25 2,318.46 < MA99 2,318.58 (gap 0.005%, 직전엔 +0.007%였음). Layer 3 ❌
+- SOLUSDT LONG **5/5** ENTER 🟢 — entry 94.52, 8분 전 skipped → 가격이 swing 범위 내로 회복. Layer 2 swing_high 94.80 (0.30%), Layer 3 ✅ volume 119,018
+- 변화점:
+  - BTC: retracement으로 swing_low에 정확히 도달 → 5/5 (이게 framework가 노리는 시나리오)
+  - ETH: MA gap 0.005~0.007% 사이에서 진동 → 8분 만에 LONG↔SHORT 뒤집힘
+  - SOL: out-of-range → in-range 전환
+- **패턴 단서 #1 강화**: ETH의 MA gap이 0.005~0.007% 범위에서 LONG/SHORT가 뒤집힘. 이는 framework의 핵심 약점 — **noise를 trend로 분류**. 한 번 더 0.1% 이하 gap 관찰되면 Phase 2에서 즉시 튜닝 후보.
+- **패턴 단서 #3 (신규)**: BTC가 swing_low에서 거부 캔들 + 거래량 spike → 모든 5 layers passing. 이는 framework가 의도한 "이상적 셋업" 신호. Real trade라면 진입 고려 가치.
+- 튜닝 결정: none (Phase 1, iter 2/4)
