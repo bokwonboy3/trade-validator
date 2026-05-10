@@ -130,3 +130,13 @@
 - ✅ pytest + smoke 검증 통과 → commit/push
 
 **튜닝 결정**: applied (1/3 max). iter 6+에서 추가 패턴 관찰. 새 튜닝 후보 발견되면 적용.
+
+### Iteration 6 [Phase 2, post-tuning observation]
+- 🟢 BTCUSDT LONG 4/5 — **iter 5 post-tuning과 정확히 동일** (entry/SL/TP 모두 동일, suppressed)
+- · ETHUSDT SHORT 3/5 — **tuning #1 효과 지속**: Layer 1 weak_trend 차단으로 threshold 아래
+- ⏭ SOLUSDT skipped (변화 없음)
+- 1 suppressed (BTC), 0 dispatched
+- 변화점: **시장 정체 — 동일 1H 캔들 사용 (KST 07:00→08:00 미마감)**. Real-time elapsed between iter 5 and 6 가 매우 짧음 (사용자가 schedule wakeup에 즉시 응답).
+- 추가 패턴 단서: 없음 (데이터 반복)
+- 튜닝 결정: none (Phase 2 quota 1/3 사용중, 새 패턴 부재)
+- **관찰**: 만약 iter 7도 동일 데이터면 Phase 3 wrap-up 검토. 시장이 의미 있게 움직이려면 1H+ 시간 필요.
