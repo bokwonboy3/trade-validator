@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from analysis.candles import is_hammer, is_shooting_star
+from analysis.candles import Candle, is_hammer, is_shooting_star
 from analysis.layers import LayerResult
 
 
@@ -19,7 +19,7 @@ class ValidationReport:
     layer_3: LayerResult
     layer_4: LayerResult
     layer_5: LayerResult
-    advisory_15m: dict | None = None  # in-progress 15m advisory, None if no live candle
+    advisory_15m: Candle | None = None  # in-progress 15m advisory, None if no live candle
 
     @property
     def total_score(self) -> int:
@@ -210,7 +210,7 @@ def _build_suggestions(r: ValidationReport) -> list[str]:
     return out
 
 
-def _build_advisory(candle: dict, direction: str) -> list[str]:
+def _build_advisory(candle: Candle, direction: str) -> list[str]:
     """Describe an in-progress 15m candle (no scoring impact)."""
     out: list[str] = []
     forming_hammer = is_hammer(candle)

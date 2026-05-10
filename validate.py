@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from analysis.candles import Candle
 from analysis.indicators import add_ma
 from analysis.layers import (
     InputError,
@@ -41,7 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _fetch_advisory_15m(symbol: str) -> dict | None:
+def _fetch_advisory_15m(symbol: str) -> Candle | None:
     """Fetch the in-progress 15m candle (drop_unclosed=False) and return as a dict.
 
     Returns None if no live candle is detected (rare; happens right at boundary).

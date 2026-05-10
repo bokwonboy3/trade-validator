@@ -11,7 +11,7 @@ and return results without performing I/O.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import pandas as pd
 
@@ -26,11 +26,11 @@ from analysis.levels import find_swings
 Direction = Literal["long", "short"]
 Status = Literal["pass", "fail", "pending"]
 
-LAYER2_TOLERANCE_PCT = 0.003  # ±0.3%
-LAYER3_TOUCH_TOLERANCE_PCT = 0.003  # ±0.3%
-LAYER4_SL_TOLERANCE_PCT = 0.005  # ±0.5%
-LAYER5_MIN_RR = 3.0
-ONE_HOUR_MS = 60 * 60 * 1000
+LAYER2_TOLERANCE_PCT: Final[float] = 0.003  # ±0.3%
+LAYER3_TOUCH_TOLERANCE_PCT: Final[float] = 0.003  # ±0.3%
+LAYER4_SL_TOLERANCE_PCT: Final[float] = 0.005  # ±0.5%
+LAYER5_MIN_RR: Final[float] = 3.0
+ONE_HOUR_MS: Final[int] = 60 * 60 * 1000
 
 
 class InputError(ValueError):
