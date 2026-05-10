@@ -1,0 +1,30 @@
+# Trade Validator — scanner config
+# Copy to `config.toml` and edit. `config.toml` is gitignored.
+
+[scanner]
+# Binance symbols to scan. Direction is auto-derived from 4H Layer 1 trend
+# (LONG when MA25 > MA99, SHORT when MA25 < MA99).
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+[scanner.thresholds]
+# Minimum 5-Layer score (0..5) to dispatch an alert.
+# 4 = matches the trader rule "Score 4/5 미만 = 무조건 패스".
+min_score = 4
+
+# When the scanner synthesizes a setup automatically (no user-given SL/TP),
+# it derives SL from the closest qualifying swing and TP from this R:R.
+default_rr = 3.0
+
+[notifications]
+# Active channels. Subset of: "stdout", "file", "telegram".
+# Telegram requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env vars.
+channels = ["stdout"]
+
+[notifications.file]
+# Append-only log file for "file" channel.
+path = "alerts.log"
+
+[notifications.telegram]
+# Telegram dispatch is opt-in. When true, requires both env vars set;
+# otherwise scanner logs a warning and skips that channel.
+enabled = false

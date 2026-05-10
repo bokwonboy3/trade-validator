@@ -64,7 +64,7 @@
 
 | ID | 작업 | DoD | 상태 |
 |---|---|---|---|
-| B1 | Config 스키마 (TOML) | `config.example.toml` — symbols, intervals, defaults | pending |
+| B1 | Config 스키마 (TOML) | `config.example.toml` — symbols, intervals, defaults | ✅ done |
 | B2 | Refactor: `evaluate_setup()` 추출 | `validate.py`의 5-layer 호출을 단일 함수로 | pending |
 | B3 | Multi-symbol scanner | `scan.py` — config 읽고 모든 symbol 평가, ≥4/5만 출력 | pending |
 | B4 | "이미 알림 보낸 셋업" idempotency | `~/.tv-state.json` 또는 repo 내 state file로 중복 방지 | pending |
@@ -120,3 +120,11 @@
 
 ## Phase A 완료
 A1~A7 모두 done. Score: 71 tests, CI green, 9 commits on overnight branch.
+
+- `[2026-05-11 00:28 KST]` B1 완료: scanner_config.py + config.example.toml.
+  - tomllib (Python 3.11+ stdlib) 사용 — 추가 의존성 0
+  - frozen dataclass: ScannerConfig / ThresholdsConfig / NotificationsConfig / FileChannelConfig / TelegramChannelConfig
+  - ConfigError 친근한 메시지 ("config not found — copy config.example.toml → config.toml")
+  - 검증: symbols 비어있음, min_score 범위, default_rr 양수, channels 화이트리스트
+  - .gitignore에 config.toml, alerts.log, .tv-state.json 추가
+  - 8개 단위 테스트, 79 tests pass.
