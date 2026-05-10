@@ -56,7 +56,7 @@
 | A4 | Edge case 테스트 추가 | 빈 DataFrame, NaN MA, 캔들 부족 등 5+ 케이스 | ✅ done |
 | A5 | GitHub Actions CI | `.github/workflows/test.yml` — push/PR에 pytest 실행, fixture만 사용 | ✅ done |
 | A6 | LICENSE (MIT) | `LICENSE` 파일 존재 | ✅ done |
-| A7 | 에러 메시지 정리 | `BinanceError` / `InputError` 메시지 톤 통일 | pending |
+| A7 | 에러 메시지 정리 | `BinanceError` / `InputError` 메시지 톤 통일 | ✅ done |
 
 ---
 
@@ -110,3 +110,13 @@
 - `[2026-05-11 00:14 KST]` A4 완료: tests/test_edge_cases.py 13개 추가 (빈 df, NaN MA, monotonic 시리즈, 너무 적은 행, Layer 1~4 graceful fail, zero-range candle 등). **Bug fix**: layer_2가 levels 리스트 빈 경우 inf% 출력 → "no_levels_found" reason + formatter에 별도 메시지 ("핵심 레벨 미발견 (1H 데이터 부족)"). 71 tests pass (was 58).
 - `[2026-05-11 00:18 KST]` A5 완료: .github/workflows/test.yml 추가. push 모든 브랜치 + PR(main)에서 Python 3.11/3.12 매트릭스로 pytest. pip 캐시 활성화. fixture만 사용해서 인터넷 없이 동작. **CI 결과**: 31초 success (3.11 + 3.12 둘 다 통과).
 - `[2026-05-11 00:22 KST]` A6 완료: MIT LICENSE 추가, README에 License 섹션 링크.
+- `[2026-05-11 00:25 KST]` A7 완료: 에러 메시지 톤 통일.
+  - data/binance.py: _parse_binance_error 헬퍼 추가 (Binance JSON 응답에서 msg 필드 추출). 4xx/5xx 모두 동일한 포맷("HTTP {code}: {msg}").
+  - Timeout과 일반 RequestException 분리 (기존엔 한 묶음).
+  - 응답 텍스트 길이 일관화 (4xx 500 → 300, 5xx 200 → 300).
+  - layers.py: "unknown direction" → "direction must be 'long' or 'short' (got: ...)".
+  - Smoke: invalid symbol → "❌ Binance error: HTTP 400: Invalid symbol." (raw JSON 노출 사라짐).
+  - 71 tests still pass.
+
+## Phase A 완료
+A1~A7 모두 done. Score: 71 tests, CI green, 9 commits on overnight branch.

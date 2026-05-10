@@ -295,7 +295,7 @@ def validate_inputs(entry: float, sl: float, tp: float, direction: Direction) ->
                 f"SHORT: TP ({tp:,.2f}) must be below Entry ({entry:,.2f})"
             )
     else:
-        raise InputError(f"unknown direction: {direction}")
+        raise InputError(f"direction must be 'long' or 'short' (got: {direction!r})")
 
 
 def layer_5_risk_reward(
