@@ -71,7 +71,7 @@
 | B5 | Notification dispatcher 추상화 | `output/notify.py` — File / Stdout / Telegram(stub) 채널 | ✅ done |
 | B6 | Telegram client (토큰 없으면 stub) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` env. 없으면 dry-run 로그 | ✅ done |
 | B7 | Cron-friendly entry | `scan.py --once` 단일 스캔, exit code로 성공/실패 표현 | ✅ done |
-| B8 | Fixture 기반 scan smoke 테스트 | `pytest tests/test_scan.py` 통과 | pending |
+| B8 | Fixture 기반 scan smoke 테스트 | `pytest tests/test_scan.py` 통과 | ✅ done |
 
 ---
 
@@ -146,6 +146,17 @@ A1~A7 모두 done. Score: 71 tests, CI green, 9 commits on overnight branch.
   - .gitignore: scan.log 추가
   - 9개 단위 테스트 (parse_args, exit codes, quiet 동작, idempotency 통합), 134 tests pass.
   - **라이브 검증**: 1차 실행 → 3 setup dispatch + state 저장. 2차 실행 → 0 출력, exit 0 (모두 suppressed) — idempotency 정상.
+- `[2026-05-11 01:00 KST]` B8 완료: tests/test_scan_integration.py — fetch_klines monkeypatch + 저장된 BTCUSDT fixture로 end-to-end 파이프라인 검증.
+  - scan_symbol(): 정상 평가 결과, Layer 1+5 항상 pass, Layer 4 항상 pass(설계상)
+  - BinanceError → ScanResult.error 패키징
+  - run_scan(): dispatch + idempotency interaction + quiet 모드 + 0 통과 시 state.save() 보장
+  - 7개 통합 테스트, 141 tests pass.
+
+## Phase B 완료
+B1~B8 모두 done. Score: 141 tests, CI green (next push 후 확인), 16 commits on overnight branch.
+
+## 자동화 종료 사유
+정의된 scope (Phase A + Phase B) 완료. Stop 조건 #2 만족.
 - `[2026-05-11 00:28 KST]` B1 완료: scanner_config.py + config.example.toml.
   - tomllib (Python 3.11+ stdlib) 사용 — 추가 의존성 0
   - frozen dataclass: ScannerConfig / ThresholdsConfig / NotificationsConfig / FileChannelConfig / TelegramChannelConfig
