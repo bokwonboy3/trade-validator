@@ -71,3 +71,15 @@
 - **패턴 단서 #1 강화**: ETH의 MA gap이 0.005~0.007% 범위에서 LONG/SHORT가 뒤집힘. 이는 framework의 핵심 약점 — **noise를 trend로 분류**. 한 번 더 0.1% 이하 gap 관찰되면 Phase 2에서 즉시 튜닝 후보.
 - **패턴 단서 #3 (신규)**: BTC가 swing_low에서 거부 캔들 + 거래량 spike → 모든 5 layers passing. 이는 framework가 의도한 "이상적 셋업" 신호. Real trade라면 진입 고려 가치.
 - 튜닝 결정: none (Phase 1, iter 2/4)
+
+### Iteration 3 [2026-05-11 07:06 KST] (+15분 from iter 2)
+- BTCUSDT LONG **4/5** ENTER 🟢 — entry 80,720 (iter 2: 80,734, −0.02%), Layer 3 **✅→❌** (8분 전 거부 캔들이 더이상 "recent" 아님), Layer 2 swing_low 80,725.09 (0.01%), Layer 4 SL 80,331.05 (swing 80,572.77 기반 — entry가 직전 swing low 아래로 내려가서 synthesizer가 더 깊은 swing 사용)
+- ETHUSDT SHORT 4/5 — **suppressed (이미 24h 내 알림)** — Layer 1 약세 유지 (15분간 flip 없음). Idempotency 정상 동작 확인.
+- SOLUSDT — skipped (다시 range 밖)
+- 변화점:
+  - BTC Layer 3 ephemeral 신호: 5/5 → 4/5 (15min). 거부 캔들 신호의 lifespan은 ~15분 (다음 15m 마감 시 사라짐). **진입 윈도우 짧다는 framework 특성.**
+  - ETH 15분간 SHORT 유지 — iter 1→2의 flip 후 안정. MA gap이 strict 양수로 자리잡았을 가능성.
+  - SOL: range 안↔밖 진동 (높은 변동성)
+- **Idempotency 검증**: ETH 같은 (symbol, direction, swing) signature → 자동 suppress. 핵심 기능 OK.
+- **Synthesizer 적응성 확인**: BTC entry가 직전 swing 아래로 떨어지자 더 깊은 swing 자동 선택. 같은 셋업이 아니라 새 셋업으로 인식 (정답).
+- 튜닝 결정: none (Phase 1, iter 3/4)
