@@ -1,0 +1,106 @@
+# Overnight Automation Log
+
+이 문서는 사용자가 잠든 동안 Claude가 `/loop` 자율 모드로 작업하는 동안 상태를 추적합니다.
+모든 결정/진행/블로커가 여기에 기록됩니다. 아침에 이 파일을 먼저 보세요.
+
+---
+
+## Scope
+
+**Phase A (S) — 안전 베이스라인 강화**: README, CI, 코드 품질
+**Phase B (M) — Phase 1 구현**: Multi-symbol 스캔 + 알람 와이어 (Telegram 토큰 미포함)
+
+순서: A 완료 후 B 진행. A에서 막히면 B 시작 안 함.
+
+---
+
+## Authority
+
+10년차 financial trader 관점 + 엔지니어 판단으로 설계 결정. Phase 0 plan의 D1~D10 결정은 불변(invariant) 처리.
+
+---
+
+## Stop Conditions (강제 종료)
+
+다음 중 하나라도 발생하면 즉시 STOP하고 이 파일에 사유 기록:
+
+1. **외부 블로커**: 자격 증명/사용자 결정이 필수인 시점 (예: Telegram bot 토큰)
+2. **Scope 완료**: A + B 모든 항목 완료
+3. **Commit 상한**: 누적 30개
+4. **시간 상한**: 자동화 시작 후 8시간
+5. **반복 실패**: 같은 곳에서 테스트 fail 3회 연속 (방향이 잘못됐다는 신호)
+
+---
+
+## Iteration Loop Spec
+
+매 iteration:
+1. `git status` + `git log -3 --oneline` 으로 현재 상태 확인
+2. 이 파일의 Progress Log를 읽어 직전 진행 상황 파악
+3. 다음 작업 단위 1개 선택 (가장 작은 의미 있는 단위)
+4. 구현 + `pytest tests/` + 필요 시 smoke 검증
+5. 모두 통과 시: `git add` + `git commit` + `git push`
+6. 실패 시: 재시도 1회. 그래도 실패면 다른 항목으로 우회 + 이 파일에 기록
+7. Progress Log에 한 줄 추가
+8. Stop 조건 점검 → 만족 시 STOP, 아니면 ScheduleWakeup으로 다음 iteration 예약
+
+---
+
+## Phase A (S) — Tasks
+
+| ID | 작업 | DoD | 상태 |
+|---|---|---|---|
+| A1 | README 보강 — 설치/사용법/출력 해석/한계 | `## Installation`, `## Usage`, `## Interpreting Output`, `## Limitations` 섹션 존재 | pending |
+| A2 | `--no-emoji` 플래그 | 출력에서 이모지 제거 옵션 동작 + 테스트 1개 | pending |
+| A3 | 타입 힌트 일관화 | `from __future__ import annotations` 모든 모듈, 함수 시그니처 타입 힌트 | pending |
+| A4 | Edge case 테스트 추가 | 빈 DataFrame, NaN MA, 캔들 부족 등 5+ 케이스 | pending |
+| A5 | GitHub Actions CI | `.github/workflows/test.yml` — push/PR에 pytest 실행, fixture만 사용 | pending |
+| A6 | LICENSE (MIT) | `LICENSE` 파일 존재 | pending |
+| A7 | 에러 메시지 정리 | `BinanceError` / `InputError` 메시지 톤 통일 | pending |
+
+---
+
+## Phase B (M) — Tasks
+
+| ID | 작업 | DoD | 상태 |
+|---|---|---|---|
+| B1 | Config 스키마 (TOML) | `config.example.toml` — symbols, intervals, defaults | pending |
+| B2 | Refactor: `evaluate_setup()` 추출 | `validate.py`의 5-layer 호출을 단일 함수로 | pending |
+| B3 | Multi-symbol scanner | `scan.py` — config 읽고 모든 symbol 평가, ≥4/5만 출력 | pending |
+| B4 | "이미 알림 보낸 셋업" idempotency | `~/.tv-state.json` 또는 repo 내 state file로 중복 방지 | pending |
+| B5 | Notification dispatcher 추상화 | `output/notify.py` — File / Stdout / Telegram(stub) 채널 | pending |
+| B6 | Telegram client (토큰 없으면 stub) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` env. 없으면 dry-run 로그 | pending |
+| B7 | Cron-friendly entry | `scan.py --once` 단일 스캔, exit code로 성공/실패 표현 | pending |
+| B8 | Fixture 기반 scan smoke 테스트 | `pytest tests/test_scan.py` 통과 | pending |
+
+---
+
+## Decision Principles (불변)
+
+- **Trader 보수주의**: 정보 부재 = 약점 처리
+- **재현성 > liveness**: 점수는 마감된 캔들만
+- **단일 알고리즘 > 플래그 분기**: Hybrid Layer 3 정신 유지
+- **Phase 0 invariants**: D1~D10 (plan 파일) 깨지 않음
+- **Trader 룰 정신**: "Score 4/5 미만 = 무조건 패스" 무력화될 변경은 거부
+
+---
+
+## 외부 블로커 처리
+
+발견 시:
+1. Progress Log에 "BLOCKER: ..." 기록
+2. 코드는 stub/placeholder로 작성하고 README/AUTOMATION.md에 사용자 액션 명시
+3. 블로커 항목은 SKIP하고 다음 항목으로 진행
+4. 모든 항목 시도 후에 STOP
+
+알려진 블로커:
+- B6 Telegram 토큰 — 사용자가 BotFather에서 받아 `TELEGRAM_BOT_TOKEN` 환경변수 설정 필요
+- B6 Chat ID — `TELEGRAM_CHAT_ID` 환경변수 필요
+
+---
+
+## Progress Log
+
+(매 iteration마다 한 줄씩 추가)
+
+- `[2026-05-10 23:50 KST]` AUTOMATION.md 작성 — 자동화 시작
