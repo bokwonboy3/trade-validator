@@ -20,7 +20,7 @@ from analysis.candles import (
     is_rejection,
     is_volume_spike,
 )
-from analysis.indicators import latest_ma
+from analysis.indicators import add_ma, latest_ma
 from analysis.levels import find_swings
 
 Direction = Literal["long", "short"]
@@ -319,4 +319,61 @@ def layer_5_risk_reward(
         score=1 if passed else 0,
         status="pass" if passed else "fail",
         detail={"rr": rr, "reward": reward, "risk": risk, "min_rr": min_rr},
+    )
+
+
+PASS_THRESHOLD: Final[int] = 4
+
+
+@dataclass(frozen=True)
+class SetupEvaluation:
+    """Bundled output of all 5 layers + score helpers."""
+
+    layer_1: LayerResult
+    layer_2: LayerResult
+    layer_3: LayerResult
+    layer_4: LayerResult
+    layer_5: LayerResult
+
+    @property
+    def total_score(self) -> int:
+        return (
+            self.layer_1.score
+            + self.layer_2.score
+            + self.layer_3.score
+            + self.layer_4.score
+            + self.layer_5.score
+        )
+
+    @property
+    def passes(self) -> bool:
+        return self.total_score >= PASS_THRESHOLD
+
+    def as_layers(self) -> list[LayerResult]:
+        return [self.layer_1, self.layer_2, self.layer_3, self.layer_4, self.layer_5]
+
+
+def evaluate_setup(
+    df_4h: pd.DataFrame,
+    df_1h: pd.DataFrame,
+    df_15m: pd.DataFrame,
+    *,
+    entry: float,
+    sl: float,
+    tp: float,
+    direction: Direction,
+) -> SetupEvaluation:
+    """Run all 5 layers in order on the given OHLCV frames.
+
+    Adds MA columns to the 4h and 1h frames as needed. Layer 3 uses raw 1h+15m
+    (no MA needed). Inputs are assumed already validated via validate_inputs().
+    """
+    df_4h_ma = add_ma(df_4h, [25, 99])
+    df_1h_ma = add_ma(df_1h, [25, 99])
+    return SetupEvaluation(
+        layer_1=layer_1_trend(df_4h_ma, direction),
+        layer_2=layer_2_setup_zone(df_1h_ma, entry),
+        layer_3=layer_3_rejection(df_1h, df_15m, entry, direction),
+        layer_4=layer_4_sl_structure(df_1h, sl, direction),
+        layer_5=layer_5_risk_reward(entry, sl, tp, direction),
     )

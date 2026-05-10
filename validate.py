@@ -5,14 +5,9 @@ import argparse
 import sys
 
 from analysis.candles import Candle
-from analysis.indicators import add_ma
 from analysis.layers import (
     InputError,
-    layer_1_trend,
-    layer_2_setup_zone,
-    layer_3_rejection,
-    layer_4_sl_structure,
-    layer_5_risk_reward,
+    evaluate_setup,
     validate_inputs,
 )
 from data.binance import BinanceError, fetch_klines
@@ -85,14 +80,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{prefix} Binance error: {e}", file=sys.stderr)
         return 3
 
-    df_4h_ma = add_ma(df_4h, [25, 99])
-    df_1h_ma = add_ma(df_1h, [25, 99])
-
-    l1 = layer_1_trend(df_4h_ma, direction)
-    l2 = layer_2_setup_zone(df_1h_ma, args.entry)
-    l3 = layer_3_rejection(df_1h, df_15m, args.entry, direction)
-    l4 = layer_4_sl_structure(df_1h, args.sl, direction)
-    l5 = layer_5_risk_reward(args.entry, args.sl, args.tp, direction)
+    ev = evaluate_setup(
+        df_4h, df_1h, df_15m,
+        entry=args.entry, sl=args.sl, tp=args.tp, direction=direction,
+    )
 
     advisory = None
     try:
@@ -106,11 +97,11 @@ def main(argv: list[str] | None = None) -> int:
         entry=args.entry,
         sl=args.sl,
         tp=args.tp,
-        layer_1=l1,
-        layer_2=l2,
-        layer_3=l3,
-        layer_4=l4,
-        layer_5=l5,
+        layer_1=ev.layer_1,
+        layer_2=ev.layer_2,
+        layer_3=ev.layer_3,
+        layer_4=ev.layer_4,
+        layer_5=ev.layer_5,
         advisory_15m=advisory,
     )
     print(format_report(report, no_emoji=args.no_emoji))

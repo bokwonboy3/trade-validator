@@ -65,7 +65,7 @@
 | ID | 작업 | DoD | 상태 |
 |---|---|---|---|
 | B1 | Config 스키마 (TOML) | `config.example.toml` — symbols, intervals, defaults | ✅ done |
-| B2 | Refactor: `evaluate_setup()` 추출 | `validate.py`의 5-layer 호출을 단일 함수로 | pending |
+| B2 | Refactor: `evaluate_setup()` 추출 | `validate.py`의 5-layer 호출을 단일 함수로 | ✅ done |
 | B3 | Multi-symbol scanner | `scan.py` — config 읽고 모든 symbol 평가, ≥4/5만 출력 | pending |
 | B4 | "이미 알림 보낸 셋업" idempotency | `~/.tv-state.json` 또는 repo 내 state file로 중복 방지 | pending |
 | B5 | Notification dispatcher 추상화 | `output/notify.py` — File / Stdout / Telegram(stub) 채널 | pending |
@@ -121,6 +121,7 @@
 ## Phase A 완료
 A1~A7 모두 done. Score: 71 tests, CI green, 9 commits on overnight branch.
 
+- `[2026-05-11 00:32 KST]` B2 완료: evaluate_setup() + SetupEvaluation 데이터클래스 (analysis/layers.py 끝에 추가). validate.py main() 5-layer 호출을 단일 함수로 압축. PASS_THRESHOLD=4 상수화. 4 단위 테스트 추가. 83 tests pass. CLI smoke 동일 출력 확인.
 - `[2026-05-11 00:28 KST]` B1 완료: scanner_config.py + config.example.toml.
   - tomllib (Python 3.11+ stdlib) 사용 — 추가 의존성 0
   - frozen dataclass: ScannerConfig / ThresholdsConfig / NotificationsConfig / FileChannelConfig / TelegramChannelConfig
