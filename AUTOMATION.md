@@ -69,7 +69,7 @@
 | B3 | Multi-symbol scanner | `scan.py` — config 읽고 모든 symbol 평가, ≥4/5만 출력 | pending |
 | B4 | "이미 알림 보낸 셋업" idempotency | `~/.tv-state.json` 또는 repo 내 state file로 중복 방지 | pending |
 | B5 | Notification dispatcher 추상화 | `output/notify.py` — File / Stdout / Telegram(stub) 채널 | ✅ done |
-| B6 | Telegram client (토큰 없으면 stub) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` env. 없으면 dry-run 로그 | pending |
+| B6 | Telegram client (토큰 없으면 stub) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` env. 없으면 dry-run 로그 | ✅ done |
 | B7 | Cron-friendly entry | `scan.py --once` 단일 스캔, exit code로 성공/실패 표현 | pending |
 | B8 | Fixture 기반 scan smoke 테스트 | `pytest tests/test_scan.py` 통과 | pending |
 
@@ -123,6 +123,7 @@ A1~A7 모두 done. Score: 71 tests, CI green, 9 commits on overnight branch.
 
 - `[2026-05-11 00:32 KST]` B2 완료: evaluate_setup() + SetupEvaluation 데이터클래스 (analysis/layers.py 끝에 추가). validate.py main() 5-layer 호출을 단일 함수로 압축. PASS_THRESHOLD=4 상수화. 4 단위 테스트 추가. 83 tests pass. CLI smoke 동일 출력 확인.
 - `[2026-05-11 00:35 KST]` B5 완료: output/notify.py — Channel Protocol + Stdout/File/Telegram 구현. build_channels() 팩토리 (telegram disabled 또는 env 미설정 시 stderr 경고 + 스킵), dispatch() per-channel 실패 격리. 16개 테스트 추가, 99 tests pass. Telegram send는 B5 스텁 (B6에서 HTTP 구현).
+- `[2026-05-11 00:39 KST]` B6 완료: TelegramChannel.send 실제 HTTP POST 구현 (api.telegram.org/bot{token}/sendMessage). 4096자 초과 시 자동 truncate, 4xx/5xx 또는 ok=false 시 RuntimeError → dispatcher가 격리. requests.post mock 으로 5개 테스트 추가 (성공, 401, ok=false, truncate, 격리). README에 텔레그램 봇 설정 가이드 추가 (BotFather, getUpdates, env+config). 103 tests pass.
 - `[2026-05-11 00:28 KST]` B1 완료: scanner_config.py + config.example.toml.
   - tomllib (Python 3.11+ stdlib) 사용 — 추가 의존성 0
   - frozen dataclass: ScannerConfig / ThresholdsConfig / NotificationsConfig / FileChannelConfig / TelegramChannelConfig

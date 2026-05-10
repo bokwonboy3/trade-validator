@@ -12,10 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
 
+import requests
+
 from scanner_config import NotificationsConfig
 
 TELEGRAM_TOKEN_ENV: Final = "TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID_ENV: Final = "TELEGRAM_CHAT_ID"
+TELEGRAM_API_BASE: Final = "https://api.telegram.org"
+TELEGRAM_TIMEOUT_SEC: Final = 10
+TELEGRAM_MAX_LEN: Final = 4096  # Bot API hard limit
 
 
 @runtime_checkable
@@ -53,10 +58,10 @@ class FileChannel:
 
 @dataclass
 class TelegramChannel:
-    """Telegram Bot API channel.
+    """Telegram Bot API sendMessage channel.
 
-    Phase-0/B5 stub: structural placeholder — emits a dry-run log line.
-    The real HTTP call is implemented in B6.
+    Bot token + chat_id come from env vars (TELEGRAM_BOT_TOKEN / _CHAT_ID).
+    Messages longer than 4096 chars are truncated with a tail marker.
     """
 
     bot_token: str
@@ -73,12 +78,31 @@ class TelegramChannel:
         return cls(bot_token=token, chat_id=chat)
 
     def send(self, message: str) -> None:
-        # B5 stub — B6 replaces with HTTP POST to api.telegram.org.
-        print(
-            f"[telegram stub] would send to chat {self.chat_id}: "
-            f"{message[:80]}{'...' if len(message) > 80 else ''}",
-            file=sys.stderr,
+        text = message
+        if len(text) > TELEGRAM_MAX_LEN:
+            text = text[: TELEGRAM_MAX_LEN - 20] + "\n... [truncated]"
+        url = f"{TELEGRAM_API_BASE}/bot{self.bot_token}/sendMessage"
+        resp = requests.post(
+            url,
+            json={
+                "chat_id": self.chat_id,
+                "text": text,
+                "disable_web_page_preview": True,
+            },
+            timeout=TELEGRAM_TIMEOUT_SEC,
         )
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"Telegram HTTP {resp.status_code}: {resp.text[:200]}"
+            )
+        try:
+            body = resp.json()
+        except ValueError as e:
+            raise RuntimeError(f"Telegram returned non-JSON: {e}")
+        if not body.get("ok"):
+            raise RuntimeError(
+                f"Telegram rejected: {body.get('description', body)}"
+            )
 
 
 def build_channels(cfg: NotificationsConfig) -> list[Channel]:

@@ -77,13 +77,74 @@ def test_telegram_from_env_both_set_returns_instance(monkeypatch):
     assert tg.chat_id == "999"
 
 
-def test_telegram_send_is_stub(capsys, monkeypatch):
-    """B5 stub — emits a dry-run line to stderr but does not raise."""
-    tg = TelegramChannel(bot_token="abc", chat_id="999")
+def test_telegram_send_posts_to_api(mocker):
+    fake_resp = mocker.Mock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {"ok": True, "result": {}}
+    post = mocker.patch("output.notify.requests.post", return_value=fake_resp)
+
+    tg = TelegramChannel(bot_token="TOKEN_X", chat_id="999")
     tg.send("test message")
-    captured = capsys.readouterr()
-    assert "telegram stub" in captured.err
-    assert "999" in captured.err
+
+    post.assert_called_once()
+    args, kwargs = post.call_args
+    # URL contains bot token
+    assert "TOKEN_X" in args[0] or "TOKEN_X" in kwargs.get("url", "")
+    # Body has chat_id and text
+    payload = kwargs["json"]
+    assert payload["chat_id"] == "999"
+    assert payload["text"] == "test message"
+    assert payload["disable_web_page_preview"] is True
+
+
+def test_telegram_send_raises_on_http_error(mocker):
+    fake_resp = mocker.Mock()
+    fake_resp.status_code = 401
+    fake_resp.text = '{"ok":false,"description":"Unauthorized"}'
+    mocker.patch("output.notify.requests.post", return_value=fake_resp)
+
+    tg = TelegramChannel(bot_token="bad", chat_id="999")
+    with pytest.raises(RuntimeError, match="Telegram HTTP 401"):
+        tg.send("hi")
+
+
+def test_telegram_send_raises_on_ok_false(mocker):
+    fake_resp = mocker.Mock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {"ok": False, "description": "chat not found"}
+    mocker.patch("output.notify.requests.post", return_value=fake_resp)
+
+    tg = TelegramChannel(bot_token="good", chat_id="bad")
+    with pytest.raises(RuntimeError, match="chat not found"):
+        tg.send("hi")
+
+
+def test_telegram_send_truncates_long_messages(mocker):
+    fake_resp = mocker.Mock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {"ok": True, "result": {}}
+    post = mocker.patch("output.notify.requests.post", return_value=fake_resp)
+
+    long_msg = "x" * 5000
+    tg = TelegramChannel(bot_token="t", chat_id="c")
+    tg.send(long_msg)
+
+    sent_text = post.call_args.kwargs["json"]["text"]
+    assert len(sent_text) <= 4096
+    assert sent_text.endswith("[truncated]")
+
+
+def test_telegram_send_propagates_via_dispatcher_isolation(mocker):
+    """Telegram failure shouldn't break other channels."""
+    fake_resp = mocker.Mock()
+    fake_resp.status_code = 500
+    fake_resp.text = "Server Error"
+    mocker.patch("output.notify.requests.post", return_value=fake_resp)
+
+    tg = TelegramChannel(bot_token="t", chat_id="c")
+    chans = [StdoutChannel(), tg]
+    results = dispatch(chans, "msg")
+    assert results == {"stdout": True, "telegram": False}
 
 
 # --- build_channels ---

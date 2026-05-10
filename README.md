@@ -257,6 +257,42 @@ trade-validator/
 
 ---
 
+## Telegram 알람 설정 (Phase 1 옵션)
+
+스캐너 알람을 텔레그램으로 받으려면:
+
+### 1. 봇 만들기
+
+1. 텔레그램에서 [@BotFather](https://t.me/BotFather) 검색 → 대화 시작
+2. `/newbot` 입력 → 안내에 따라 봇 이름과 username 설정
+3. 출력된 **Bot Token** 복사 (예: `1234567890:AAH...`)
+
+### 2. Chat ID 확인
+
+1. 만든 봇 검색해서 `/start` 메시지 보내기 (봇이 사용자에게 메시지를 보내려면 사용자가 먼저 시작해야 함)
+2. 브라우저에서 `https://api.telegram.org/bot<TOKEN>/getUpdates` 열기
+3. 응답에서 `"chat":{"id":<NUMBER>}` 부분의 숫자가 chat_id
+
+### 3. 환경 변수 + config.toml
+
+```bash
+export TELEGRAM_BOT_TOKEN="1234567890:AAH..."
+export TELEGRAM_CHAT_ID="123456789"
+```
+
+`config.toml`:
+```toml
+[notifications]
+channels = ["stdout", "telegram"]
+
+[notifications.telegram]
+enabled = true
+```
+
+토큰이나 chat_id가 없으면 텔레그램 채널은 자동으로 비활성화됩니다 (다른 채널은 정상 동작).
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
