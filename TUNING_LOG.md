@@ -83,3 +83,32 @@
 - **Idempotency 검증**: ETH 같은 (symbol, direction, swing) signature → 자동 suppress. 핵심 기능 OK.
 - **Synthesizer 적응성 확인**: BTC entry가 직전 swing 아래로 떨어지자 더 깊은 swing 자동 선택. 같은 셋업이 아니라 새 셋업으로 인식 (정답).
 - 튜닝 결정: none (Phase 1, iter 3/4)
+
+### Iteration 4 [2026-05-11 07:23 KST] (+17분 from iter 3)
+- BTCUSDT LONG 4/5 ENTER — **iter 3과 정확히 동일** (entry 80,720.47, SL 80,331.05, TP 81,888.72)
+- ETHUSDT SHORT 4/5 ENTER — **iter 3과 동일**
+- SOLUSDT skipped — 동일
+- **둘 다 suppressed** → 0 dispatch
+- 변화점: **시장 정체**. 07:00→08:00 1H 캔들 미마감으로 1H 기반 layers (1, 2, 4)는 동일. 새 15m 캔들 닫혔으나 Layer 3에 영향 줄 거부 패턴 없음.
+- **Phase 1 종료**. 4회 관찰 누적.
+
+## Phase 1 종합 (iter 1~4)
+
+| 관찰 | 횟수 | 결론 |
+|---|---|---|
+| ETH MA gap < 0.01% | 2회 (iter 1 LONG, iter 2 SHORT flip) | **튜닝 우선순위 #1** — 0.005~0.007% gap에서 방향 flip 발생, framework 신호 신뢰도 낮음 |
+| BTC retracement-to-swing 5/5 | 1회 (iter 2) | Framework가 의도한 시나리오 정상 작동 |
+| Layer 3 ephemeral lifespan | 1회 (iter 2→3, 5/5→4/5) | 거부 캔들 신호 ~15분 단명 |
+| SOL range 진동 | 2회 (in→out, out→in→out) | 더 변동성 큰 alt — Layer 2 ±0.3% 너무 빡빡할 가능성 (관찰 부족, 보류) |
+| Idempotency | iter 3, 4 | 정상 동작 — 같은 signature 자동 suppress |
+
+**Phase 2 진입. 다음 iter 5에서 ONE conservative tuning 적용 예정.**
+
+### 튜닝 계획 (iter 5)
+**Layer 1 min MA gap filter 도입.**
+
+- 변경: `analysis/layers.py` `layer_1_trend()` 에 `min_ma_gap_pct: float = 0.001` (0.1%) 추가
+- 로직: `abs(ma25 - ma99) / max(ma25, ma99) < min_ma_gap_pct` 면 fail with reason="weak_trend"
+- 근거: ETH 0.005~0.007% gap에서 방향 flip 관찰. 0.1% (10배 마진) 이상이어야 의미 있는 trend.
+- 보수성: 명백한 추세는 ma gap이 1%+ (BTC iter 2: 2.26%, SOL iter 2: 5.5%) — 영향 0. ETH 같은 noise 케이스만 차단.
+- 검증: pytest 통과 + scan smoke에서 ETH가 4/5 → 3/5 (Layer 1 fail로 인해) 또는 SHORT 신호 사라짐 확인.
