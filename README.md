@@ -254,3 +254,9 @@ trade-validator/
 - **Phase 1**: 5분마다 자동 스캔 + Telegram bot 알람
 - **Phase 2**: SQLite 저널 (진입한 트레이드 결과 추적, 본인 통계)
 - **Phase 3**: Multi-symbol 지원, LLM 통합 (Ollama 또는 Claude API)
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
