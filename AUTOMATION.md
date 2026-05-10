@@ -51,7 +51,7 @@
 | ID | 작업 | DoD | 상태 |
 |---|---|---|---|
 | A1 | README 보강 — 설치/사용법/출력 해석/한계 | `## Installation`, `## Usage`, `## Interpreting Output`, `## Limitations` 섹션 존재 | ✅ done |
-| A2 | `--no-emoji` 플래그 | 출력에서 이모지 제거 옵션 동작 + 테스트 1개 | pending |
+| A2 | `--no-emoji` 플래그 | 출력에서 이모지 제거 옵션 동작 + 테스트 1개 | ✅ done |
 | A3 | 타입 힌트 일관화 | `from __future__ import annotations` 모든 모듈, 함수 시그니처 타입 힌트 | pending |
 | A4 | Edge case 테스트 추가 | 빈 DataFrame, NaN MA, 캔들 부족 등 5+ 케이스 | pending |
 | A5 | GitHub Actions CI | `.github/workflows/test.yml` — push/PR에 pytest 실행, fixture만 사용 | pending |
@@ -105,3 +105,4 @@
 
 - `[2026-05-10 23:50 KST]` AUTOMATION.md 작성 — 자동화 시작
 - `[2026-05-10 23:55 KST]` A1 완료: README 전면 보강 (Installation, Usage, 출력 해석, 한계, exit codes, 테스트 안내). 5-Layer 섹션은 실제 구현(N=5, Hybrid Layer 3, Layer 4 단방향)에 맞춰 업데이트. 작업 요청 섹션 제거. 54 tests still pass.
+- `[2026-05-11 00:03 KST]` A2 완료: --no-emoji 플래그 추가. _glyph 헬퍼로 emoji/plain glyph 매핑, 모든 literal emoji 제거 (formatter + validate.py 에러 라인). 테스트 4개 추가, 58 tests pass. Smoke 검증: `--no-emoji` 출력에 이모지 0개, [PASS]/[FAIL]/[ENTER] 라벨 정상.

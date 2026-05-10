@@ -33,6 +33,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["long", "short", "LONG", "SHORT"],
         help="long 또는 short",
     )
+    p.add_argument(
+        "--no-emoji",
+        action="store_true",
+        help="이모지 대신 [PASS]/[FAIL]/[PEND] 등 ASCII 라벨 사용",
+    )
     return p.parse_args(argv)
 
 
@@ -66,7 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         validate_inputs(args.entry, args.sl, args.tp, direction)
     except InputError as e:
-        print(f"❌ Input error: {e}", file=sys.stderr)
+        prefix = "[FAIL]" if args.no_emoji else "❌"
+        print(f"{prefix} Input error: {e}", file=sys.stderr)
         return 2
 
     try:
@@ -74,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
         df_1h = fetch_klines(symbol, "1h", limit=100)
         df_15m = fetch_klines(symbol, "15m", limit=200)
     except BinanceError as e:
-        print(f"❌ Binance error: {e}", file=sys.stderr)
+        prefix = "[FAIL]" if args.no_emoji else "❌"
+        print(f"{prefix} Binance error: {e}", file=sys.stderr)
         return 3
 
     df_4h_ma = add_ma(df_4h, [25, 99])
@@ -105,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         layer_5=l5,
         advisory_15m=advisory,
     )
-    print(format_report(report))
+    print(format_report(report, no_emoji=args.no_emoji))
     return 0
 
 
