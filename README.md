@@ -257,6 +257,53 @@ trade-validator/
 
 ---
 
+## 자동 스캔 (cron 등록)
+
+`scan.py`는 one-shot 스캐너입니다. 5분마다 실행은 cron이 담당합니다.
+
+### 1. config.toml 준비
+
+```bash
+cp config.example.toml config.toml
+# 필요한 심볼 / 알림 채널 편집
+```
+
+### 2. crontab 등록
+
+```bash
+crontab -e
+```
+
+다음 라인 추가 (5분마다 실행):
+
+```
+*/5 * * * * cd /Users/bokwon/trade-validator && .venv/bin/python scan.py --quiet --config config.toml --state .tv-state.json >> scan.log 2>&1
+```
+
+플래그 의미:
+- `--quiet` — 셋업이 dispatch될 때만 출력 (cron이 메일 안 보내게)
+- `--config` — 명시적 config 경로 (cron의 cwd가 다를 수 있음)
+- `--state` — alert idempotency state file 위치
+- 출력 리다이렉트 — cron 실행 로그를 `scan.log`로 누적
+
+### 3. Exit codes
+
+| Code | 의미 |
+|---|---|
+| 0 | 정상 완료 (셋업 통과 여부와 무관) |
+| 2 | Config 에러 |
+| 3 | 모든 심볼 실패 (Binance 장애 등 — 운영자 알림 필요) |
+
+### 4. 로그 확인
+
+```bash
+tail -f /Users/bokwon/trade-validator/scan.log
+```
+
+스캐너는 24시간 윈도우로 같은 (symbol, direction, swing low) 셋업을 한 번만 알림합니다. swing low가 ±0.1% 이상 다르면 새 셋업으로 인식.
+
+---
+
 ## Telegram 알람 설정 (Phase 1 옵션)
 
 스캐너 알람을 텔레그램으로 받으려면:

@@ -70,7 +70,7 @@
 | B4 | "이미 알림 보낸 셋업" idempotency | `~/.tv-state.json` 또는 repo 내 state file로 중복 방지 | ✅ done |
 | B5 | Notification dispatcher 추상화 | `output/notify.py` — File / Stdout / Telegram(stub) 채널 | ✅ done |
 | B6 | Telegram client (토큰 없으면 stub) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` env. 없으면 dry-run 로그 | ✅ done |
-| B7 | Cron-friendly entry | `scan.py --once` 단일 스캔, exit code로 성공/실패 표현 | pending |
+| B7 | Cron-friendly entry | `scan.py --once` 단일 스캔, exit code로 성공/실패 표현 | ✅ done |
 | B8 | Fixture 기반 scan smoke 테스트 | `pytest tests/test_scan.py` 통과 | pending |
 
 ---
@@ -138,6 +138,14 @@ A1~A7 모두 done. Score: 71 tests, CI green, 9 commits on overnight branch.
   - scan.run_scan 통합: passing → already_alerted 검사 → 새것만 dispatch + record
   - "X suppressed (already alerted within 24h)" 출력
   - 11개 단위 테스트, 125 tests pass.
+- `[2026-05-11 00:56 KST]` B7 완료: scan.py CLI 인자 + exit codes + cron docs.
+  - `--config` (경로 오버라이드), `--state` (state 경로), `--once` (호환용 플래그), `--quiet` (cron 모드 — 메타 출력 억제, 에러는 stderr 유지)
+  - Exit codes: 0=ok, 2=config error, 3=all symbols failed
+  - run_scan: all-failed 검지 → exit 3. partial errors는 stderr만 노출하고 exit 0.
+  - README: "자동 스캔 (cron 등록)" 섹션 추가 (crontab 예시 + exit code 표 + 로그 안내)
+  - .gitignore: scan.log 추가
+  - 9개 단위 테스트 (parse_args, exit codes, quiet 동작, idempotency 통합), 134 tests pass.
+  - **라이브 검증**: 1차 실행 → 3 setup dispatch + state 저장. 2차 실행 → 0 출력, exit 0 (모두 suppressed) — idempotency 정상.
 - `[2026-05-11 00:28 KST]` B1 완료: scanner_config.py + config.example.toml.
   - tomllib (Python 3.11+ stdlib) 사용 — 추가 의존성 0
   - frozen dataclass: ScannerConfig / ThresholdsConfig / NotificationsConfig / FileChannelConfig / TelegramChannelConfig
