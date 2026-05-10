@@ -1,0 +1,4 @@
+pandas>=2.0
+requests>=2.31
+pytest>=8.0
+pytest-mock>=3.12
