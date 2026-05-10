@@ -85,6 +85,20 @@ def layer_2_setup_zone(
     if not pd.isna(ma99):
         levels.append(("ma99_1h", float(ma99)))
 
+    if not levels:
+        # No swings AND no MA values — insufficient data for evaluation.
+        return LayerResult(
+            score=0,
+            status="fail",
+            detail={
+                "closest_label": "(none)",
+                "closest_price": 0.0,
+                "distance_pct": 0.0,
+                "all_levels": [],
+                "reason": "no_levels_found",
+            },
+        )
+
     # Closest level by absolute percent distance from entry
     best_label, best_price, best_dist = "", 0.0, float("inf")
     for label, price in levels:

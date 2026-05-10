@@ -107,6 +107,10 @@ def format_report(r: ValidationReport, *, no_emoji: bool = False) -> str:
             f"{ic(r.layer_2.status)} Layer 2: 핵심 레벨 근처 "
             f"({d2['closest_label']} {_fmt_money(d2['closest_price'])}, 거리 {d2['distance_pct']*100:.2f}%)"
         )
+    elif d2.get("reason") == "no_levels_found":
+        lines.append(
+            f"{ic(r.layer_2.status)} Layer 2: 핵심 레벨 미발견 (1H 데이터 부족)"
+        )
     else:
         lines.append(
             f"{ic(r.layer_2.status)} Layer 2: 핵심 레벨 아님 "

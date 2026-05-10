@@ -53,7 +53,7 @@
 | A1 | README 보강 — 설치/사용법/출력 해석/한계 | `## Installation`, `## Usage`, `## Interpreting Output`, `## Limitations` 섹션 존재 | ✅ done |
 | A2 | `--no-emoji` 플래그 | 출력에서 이모지 제거 옵션 동작 + 테스트 1개 | ✅ done |
 | A3 | 타입 힌트 일관화 | `from __future__ import annotations` 모든 모듈, 함수 시그니처 타입 힌트 | ✅ done |
-| A4 | Edge case 테스트 추가 | 빈 DataFrame, NaN MA, 캔들 부족 등 5+ 케이스 | pending |
+| A4 | Edge case 테스트 추가 | 빈 DataFrame, NaN MA, 캔들 부족 등 5+ 케이스 | ✅ done |
 | A5 | GitHub Actions CI | `.github/workflows/test.yml` — push/PR에 pytest 실행, fixture만 사용 | pending |
 | A6 | LICENSE (MIT) | `LICENSE` 파일 존재 | pending |
 | A7 | 에러 메시지 정리 | `BinanceError` / `InputError` 메시지 톤 통일 | pending |
@@ -107,3 +107,4 @@
 - `[2026-05-10 23:55 KST]` A1 완료: README 전면 보강 (Installation, Usage, 출력 해석, 한계, exit codes, 테스트 안내). 5-Layer 섹션은 실제 구현(N=5, Hybrid Layer 3, Layer 4 단방향)에 맞춰 업데이트. 작업 요청 섹션 제거. 54 tests still pass.
 - `[2026-05-11 00:03 KST]` A2 완료: --no-emoji 플래그 추가. _glyph 헬퍼로 emoji/plain glyph 매핑, 모든 literal emoji 제거 (formatter + validate.py 에러 라인). 테스트 4개 추가, 58 tests pass. Smoke 검증: `--no-emoji` 출력에 이모지 0개, [PASS]/[FAIL]/[ENTER] 라벨 정상.
 - `[2026-05-11 00:08 KST]` A3 완료: `Candle = Mapping[str, float]` 타입 별칭 도입 (analysis/candles.py). formatter._build_advisory, ValidationReport.advisory_15m, validate._fetch_advisory_15m 에서 `dict` → `Candle`로 정밀화. layers.py 모듈 상수에 `Final` 적용. 58 tests still pass.
+- `[2026-05-11 00:14 KST]` A4 완료: tests/test_edge_cases.py 13개 추가 (빈 df, NaN MA, monotonic 시리즈, 너무 적은 행, Layer 1~4 graceful fail, zero-range candle 등). **Bug fix**: layer_2가 levels 리스트 빈 경우 inf% 출력 → "no_levels_found" reason + formatter에 별도 메시지 ("핵심 레벨 미발견 (1H 데이터 부족)"). 71 tests pass (was 58).
