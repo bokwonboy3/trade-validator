@@ -17,6 +17,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
+from alert_state import AlertState
 from analysis.indicators import add_ma
 from analysis.layers import SetupEvaluation, evaluate_setup
 from analysis.scanner_logic import (
@@ -114,26 +115,56 @@ def build_report_for_alert(r: ScanResult) -> ValidationReport:
     )
 
 
-def run_scan(cfg: ScannerConfig) -> int:
-    """Top-level scan + dispatch. Returns process exit code."""
+def run_scan(cfg: ScannerConfig, *, state: AlertState | None = None) -> int:
+    """Top-level scan + dispatch. Returns process exit code.
+
+    If `state` is provided, deduplicates alerts within ALERT_TTL_HOURS so the
+    same setup isn't re-sent on every scan tick.
+    """
+    if state is None:
+        state = AlertState.load()
     results = scan(cfg)
 
     print("=== Scan Summary ===")
     for r in results:
         print(format_summary_line(r, cfg.thresholds.min_score))
 
-    passing = [r for r in results if r.passes and r.evaluation.total_score >= cfg.thresholds.min_score]
+    passing = [
+        r for r in results
+        if r.passes and r.evaluation.total_score >= cfg.thresholds.min_score
+    ]
     if not passing:
         print("\nNo setups crossed threshold.")
+        state.save()
+        return 0
+
+    new_alerts = []
+    suppressed = []
+    for r in passing:
+        assert r.setup is not None
+        if state.already_alerted(r.symbol, r.setup.direction, r.setup.sl_swing_price):
+            suppressed.append(r.symbol)
+        else:
+            new_alerts.append(r)
+
+    if suppressed:
+        print(f"\n{len(suppressed)} suppressed (already alerted within 24h): {suppressed}")
+
+    if not new_alerts:
+        print("No new setups to dispatch.")
+        state.save()
         return 0
 
     channels = build_channels(cfg.notifications)
-    print(f"\n{len(passing)} setup(s) passed — dispatching to {[c.name for c in channels]}")
-    for r in passing:
+    print(f"\n{len(new_alerts)} new setup(s) — dispatching to {[c.name for c in channels]}")
+    for r in new_alerts:
+        assert r.setup is not None
         report = build_report_for_alert(r)
         text = format_report(report)
         dispatch(channels, text)
+        state.record(r.symbol, r.setup.direction, r.setup.sl_swing_price)
 
+    state.save()
     return 0
 
 

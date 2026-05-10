@@ -67,7 +67,7 @@
 | B1 | Config 스키마 (TOML) | `config.example.toml` — symbols, intervals, defaults | ✅ done |
 | B2 | Refactor: `evaluate_setup()` 추출 | `validate.py`의 5-layer 호출을 단일 함수로 | ✅ done |
 | B3 | Multi-symbol scanner | `scan.py` — config 읽고 모든 symbol 평가, ≥4/5만 출력 | ✅ done |
-| B4 | "이미 알림 보낸 셋업" idempotency | `~/.tv-state.json` 또는 repo 내 state file로 중복 방지 | pending |
+| B4 | "이미 알림 보낸 셋업" idempotency | `~/.tv-state.json` 또는 repo 내 state file로 중복 방지 | ✅ done |
 | B5 | Notification dispatcher 추상화 | `output/notify.py` — File / Stdout / Telegram(stub) 채널 | ✅ done |
 | B6 | Telegram client (토큰 없으면 stub) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` env. 없으면 dry-run 로그 | ✅ done |
 | B7 | Cron-friendly entry | `scan.py --once` 단일 스캔, exit code로 성공/실패 표현 | pending |
@@ -131,6 +131,13 @@ A1~A7 모두 done. Score: 71 tests, CI green, 9 commits on overnight branch.
   - scan.py: ScanResult 데이터클래스, scan_symbol/scan/format_summary_line/run_scan/main
   - 11개 단위 테스트 (scanner_logic), 114 tests pass.
   - **라이브 스모크 성공**: BTCUSDT/ETHUSDT/SOLUSDT 모두 4/5 통과 (Layer 3 fail = 거부 캔들 부재, 나머지 4개 pass — 예상 동작).
+- `[2026-05-11 00:51 KST]` B4 완료: alert_state.py — JSON 기반 idempotency.
+  - AlertState.load/save (atomic write via .tmp+rename)
+  - already_alerted: (symbol, direction, sl_swing_price ±0.1%) 매칭, TTL 24h
+  - 로드 시 stale 자동 prune
+  - scan.run_scan 통합: passing → already_alerted 검사 → 새것만 dispatch + record
+  - "X suppressed (already alerted within 24h)" 출력
+  - 11개 단위 테스트, 125 tests pass.
 - `[2026-05-11 00:28 KST]` B1 완료: scanner_config.py + config.example.toml.
   - tomllib (Python 3.11+ stdlib) 사용 — 추가 의존성 0
   - frozen dataclass: ScannerConfig / ThresholdsConfig / NotificationsConfig / FileChannelConfig / TelegramChannelConfig
