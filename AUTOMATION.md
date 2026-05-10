@@ -50,7 +50,7 @@
 
 | ID | 작업 | DoD | 상태 |
 |---|---|---|---|
-| A1 | README 보강 — 설치/사용법/출력 해석/한계 | `## Installation`, `## Usage`, `## Interpreting Output`, `## Limitations` 섹션 존재 | pending |
+| A1 | README 보강 — 설치/사용법/출력 해석/한계 | `## Installation`, `## Usage`, `## Interpreting Output`, `## Limitations` 섹션 존재 | ✅ done |
 | A2 | `--no-emoji` 플래그 | 출력에서 이모지 제거 옵션 동작 + 테스트 1개 | pending |
 | A3 | 타입 힌트 일관화 | `from __future__ import annotations` 모든 모듈, 함수 시그니처 타입 힌트 | pending |
 | A4 | Edge case 테스트 추가 | 빈 DataFrame, NaN MA, 캔들 부족 등 5+ 케이스 | pending |
@@ -104,3 +104,4 @@
 (매 iteration마다 한 줄씩 추가)
 
 - `[2026-05-10 23:50 KST]` AUTOMATION.md 작성 — 자동화 시작
+- `[2026-05-10 23:55 KST]` A1 완료: README 전면 보강 (Installation, Usage, 출력 해석, 한계, exit codes, 테스트 안내). 5-Layer 섹션은 실제 구현(N=5, Hybrid Layer 3, Layer 4 단방향)에 맞춰 업데이트. 작업 요청 섹션 제거. 54 tests still pass.
