@@ -33,7 +33,17 @@
 
 ## 적용된 튜닝 (Applied Changes)
 
-(아직 없음 — Phase 1)
+### Tuning #1 — Layer 1 min MA gap filter (iter 5, 2026-05-11 07:40 KST)
+
+- **변경**: `analysis/layers.py` `layer_1_trend()` 에 `min_ma_gap_pct: float = 0.001` (0.1%) 추가.
+  새 모듈 상수 `LAYER1_MIN_MA_GAP_PCT`로 노출.
+- **로직**: `abs(ma25 - ma99) / max(|ma25|, |ma99|) < min_ma_gap_pct` 이면 status=fail, reason="weak_trend"
+- **테스트**: 3개 추가 (weak trend → fail, clear trend → pass, custom threshold). 144 tests pass.
+- **검증 결과** (post-tuning scan vs pre-tuning):
+  - BTCUSDT 4/5 → 4/5 (변화 없음, gap 2.26% ≫ 0.1%)
+  - **ETHUSDT SHORT 4/5 → SHORT 3/5** (Layer 1 weak_trend로 fail — 의도된 효과)
+  - SOLUSDT skipped → skipped (변화 없음)
+- **결론**: noise signal 차단 ✅, 명백한 추세는 영향 없음 ✅. 튜닝 성공.
 
 ---
 
@@ -102,13 +112,21 @@
 | SOL range 진동 | 2회 (in→out, out→in→out) | 더 변동성 큰 alt — Layer 2 ±0.3% 너무 빡빡할 가능성 (관찰 부족, 보류) |
 | Idempotency | iter 3, 4 | 정상 동작 — 같은 signature 자동 suppress |
 
-**Phase 2 진입. 다음 iter 5에서 ONE conservative tuning 적용 예정.**
+### Iteration 5 [2026-05-11 07:40 KST] (Phase 2 시작, Tuning #1)
 
-### 튜닝 계획 (iter 5)
-**Layer 1 min MA gap filter 도입.**
+**Pre-tuning baseline**: BTCUSDT 4/5, ETHUSDT SHORT 4/5, SOLUSDT skip (iter 3/4와 동일)
 
-- 변경: `analysis/layers.py` `layer_1_trend()` 에 `min_ma_gap_pct: float = 0.001` (0.1%) 추가
-- 로직: `abs(ma25 - ma99) / max(ma25, ma99) < min_ma_gap_pct` 면 fail with reason="weak_trend"
-- 근거: ETH 0.005~0.007% gap에서 방향 flip 관찰. 0.1% (10배 마진) 이상이어야 의미 있는 trend.
-- 보수성: 명백한 추세는 ma gap이 1%+ (BTC iter 2: 2.26%, SOL iter 2: 5.5%) — 영향 0. ETH 같은 noise 케이스만 차단.
-- 검증: pytest 통과 + scan smoke에서 ETH가 4/5 → 3/5 (Layer 1 fail로 인해) 또는 SHORT 신호 사라짐 확인.
+**Tuning applied**: Layer 1 `min_ma_gap_pct=0.001` (0.1%) — 상세는 위 "적용된 튜닝" 섹션
+
+**Post-tuning scan** (state file reset for clean comparison):
+- 🟢 BTCUSDT LONG 4/5 ENTER (변화 없음 — gap 2.26%, 필터 영향 0)
+- · ETHUSDT SHORT **3/5 PASS** (Layer 1 fail, reason="weak_trend" — 의도대로 차단)
+- ⏭ SOLUSDT skipped (변화 없음)
+
+**효과**:
+- ✅ ETH noise signal (4/5 → 3/5) 차단 — trader 보수주의 강화
+- ✅ BTC 명백한 추세 (gap 2.26%) 영향 없음
+- ✅ 144 tests pass (test_layer_1.py에 3개 추가)
+- ✅ pytest + smoke 검증 통과 → commit/push
+
+**튜닝 결정**: applied (1/3 max). iter 6+에서 추가 패턴 관찰. 새 튜닝 후보 발견되면 적용.

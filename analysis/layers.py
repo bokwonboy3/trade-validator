@@ -26,6 +26,7 @@ from analysis.levels import find_swings
 Direction = Literal["long", "short"]
 Status = Literal["pass", "fail", "pending"]
 
+LAYER1_MIN_MA_GAP_PCT: Final[float] = 0.001  # 0.1% — minimum trend strength
 LAYER2_TOLERANCE_PCT: Final[float] = 0.003  # ±0.3%
 LAYER3_TOUCH_TOLERANCE_PCT: Final[float] = 0.003  # ±0.3%
 LAYER4_SL_TOLERANCE_PCT: Final[float] = 0.005  # ±0.5%
@@ -44,15 +45,42 @@ class LayerResult:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
-def layer_1_trend(df_4h_with_ma: pd.DataFrame, direction: Direction) -> LayerResult:
-    """Layer 1: 4H MA(25) vs MA(99) alignment.
+def layer_1_trend(
+    df_4h_with_ma: pd.DataFrame,
+    direction: Direction,
+    *,
+    min_ma_gap_pct: float = LAYER1_MIN_MA_GAP_PCT,
+) -> LayerResult:
+    """Layer 1: 4H MA(25) vs MA(99) alignment + minimum trend strength.
 
     LONG passes when MA25 > MA99, SHORT passes when MA25 < MA99.
-    Equality fails for both (no clear trend).
+    Equality or near-equality fails — when ``|ma25 - ma99| / max(ma25, ma99)``
+    is below ``min_ma_gap_pct`` (default 0.1%), the trend is considered too weak
+    to act on, regardless of which side is higher.
+
+    근거 (Phase 2 tuning, 2026-05-11): adaptive-tuning loop iter 1~4 관찰에서
+    ETHUSDT의 MA gap이 0.005~0.007% 사이에서 LONG↔SHORT 방향 flip하는 케이스를
+    포착. trader 관점에서 그건 noise이지 추세 아님. min gap 0.1%는 그 noise
+    band의 10배로, 명백한 추세 (BTC 2.26%, SOL 5.5% 등)에는 영향 없음.
     """
     ma25 = latest_ma(df_4h_with_ma, 25)
     ma99 = latest_ma(df_4h_with_ma, 99)
-    detail = {"ma25": ma25, "ma99": ma99}
+    detail: dict[str, Any] = {"ma25": ma25, "ma99": ma99}
+
+    if pd.isna(ma25) or pd.isna(ma99):
+        return LayerResult(score=0, status="fail", detail=detail)
+
+    larger = max(abs(ma25), abs(ma99))
+    if larger == 0:
+        return LayerResult(score=0, status="fail", detail=detail)
+    gap_pct = abs(ma25 - ma99) / larger
+    detail["ma_gap_pct"] = gap_pct
+
+    if gap_pct < min_ma_gap_pct:
+        detail["reason"] = "weak_trend"
+        detail["min_ma_gap_pct"] = min_ma_gap_pct
+        return LayerResult(score=0, status="fail", detail=detail)
+
     if direction == "long":
         passed = ma25 > ma99
     else:

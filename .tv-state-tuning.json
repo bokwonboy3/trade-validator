@@ -1,0 +1,10 @@
+{
+  "alerts": [
+    {
+      "symbol": "BTCUSDT",
+      "direction": "long",
+      "sl_swing_price": 80572.77,
+      "alerted_at": "2026-05-10T22:41:28.792765+00:00"
+    }
+  ]
+}
