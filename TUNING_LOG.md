@@ -140,3 +140,20 @@
 - 추가 패턴 단서: 없음 (데이터 반복)
 - 튜닝 결정: none (Phase 2 quota 1/3 사용중, 새 패턴 부재)
 - **관찰**: 만약 iter 7도 동일 데이터면 Phase 3 wrap-up 검토. 시장이 의미 있게 움직이려면 1H+ 시간 필요.
+
+### Iteration 7 [Phase 2 — **REAL market evolution!**]
+- · BTCUSDT LONG **3/5** PASS — entry **82,044.49** (iter 6 80,720, **+1.64% 급등!**), SL 80,482.91, TP 86,729.22
+  - Layer 2 fail 추정 (entry가 swing_high 위로 멀리 돌파, 가장 가까운 level과 거리 큼)
+  - Layer 1은 여전히 pass (gap 충분히 큼)
+  - Layer 3 fail 추정 (breakout 후 거부 패턴 없음 = 정상)
+- ⏭ ETHUSDT skipped — "no qualifying swing within reach for short" — 가격이 swing_high에서 2% 이상 멀어짐
+- ⏭ SOLUSDT skipped (변화 없음)
+- 0 dispatch (모든 3 symbol이 통과 못 함)
+- 변화점: **드디어 시장이 의미 있게 움직임**. BTC가 swing 영역에서 위로 1.64% breakout.
+- **새 인사이트 (Phase 2 종합용)**: Framework는 **mean-reversion biased**. 만들어진 의도가 "swing/MA로의 retracement 진입". Breakout 시나리오는 의도적으로 잡지 않음. iter 7에서 "PASS"한 게 옳음 — 룰대로 작동.
+- **누적 패턴**:
+  - BTC retracement-to-swing → 5/5 (iter 2)
+  - BTC swing 위 정체 → 4/5 (Layer 3 ✅/❌ 진동, iter 3~6)
+  - BTC swing 위로 breakout → 3/5 PASS (iter 7) ← 새로 관찰
+- 튜닝 결정: none (Phase 2 quota 1/3 사용 중, mean-reversion bias는 의도된 설계지 튜닝 대상 아님)
+- 잠재적 framework 한계 노트 (Phase 3 보고서용): 현재 framework는 breakout/momentum 트레이드를 catch 못 함. 별도 strategy 필요 (Phase 4+ 후보).
