@@ -11,6 +11,7 @@ specialist gets `failed=True` while others continue. Graceful degradation.
 """
 from __future__ import annotations
 
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -158,6 +159,15 @@ def run_agentic_analysis(
                         failure_reason=f"{type(e).__name__}: {e}",
                     )
                 )
+
+    # Diagnostic: log every specialist's failure reason to stderr so cron-env
+    # issues (keychain lock, network blip, etc.) are visible in scan.log.
+    for s in specialists:
+        if s.failed:
+            print(
+                f"[agentic] {s.name} failed: {s.failure_reason}",
+                file=sys.stderr,
+            )
 
     meta = meta_judge.judge(specialists)
     return recommender.recommend(
