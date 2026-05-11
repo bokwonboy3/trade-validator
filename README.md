@@ -453,6 +453,55 @@ enabled = true
 
 토큰이나 chat_id가 없으면 텔레그램 채널은 자동으로 비활성화됩니다 (다른 채널은 정상 동작).
 
+### 4. 인라인 버튼으로 휴대폰에서 trade 기록 (Phase 4)
+
+알람마다 3개 버튼이 붙어옵니다:
+
+- **📥 진입 (시장가)** — 스캐너 추천 entry/SL/TP 그대로 trade 기록
+- **✏️ 진입 (가격 입력)** — entry → SL → TP → size 순으로 답장으로 입력
+- **⏭ 패스** — 패스 이유를 답장으로 입력
+
+버튼 처리에는 **listener 데몬**이 필요합니다 (Telegram getUpdates 롱폴링).
+
+#### 로컬 실행 (foreground, 테스트용)
+
+```bash
+export TELEGRAM_BOT_TOKEN="..."
+.venv/bin/python telegram_listener.py
+```
+
+#### launchd 데몬으로 상시 실행 (Mac 권장)
+
+1. `com.user.trade-validator-listener.plist` 템플릿 복사 + 편집:
+   - `/Users/USERNAME/trade-validator` → 실제 경로
+   - `REPLACE_WITH_YOUR_BOT_TOKEN` → 봇 토큰
+   - 필요 시 `JOURNAL_DEFAULT_SIZE` 주석 해제
+
+2. `~/Library/LaunchAgents/`에 복사하고 load:
+   ```bash
+   cp com.user.trade-validator-listener.plist ~/Library/LaunchAgents/
+   launchctl load ~/Library/LaunchAgents/com.user.trade-validator-listener.plist
+   ```
+
+3. 동작 확인:
+   ```bash
+   launchctl list | grep trade-validator-listener
+   tail -f listener.log
+   ```
+
+4. 종료:
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/com.user.trade-validator-listener.plist
+   ```
+
+#### 답장으로 사용 가능한 명령
+
+- `/close <trade_id> <exit_price> [reason]` — 열린 trade 종료, PnL 자동 계산
+- `/open` — 열린 trade 리스트
+- `/cancel` — 진행 중 입력 흐름 취소
+
+상태는 `.tv-listener-state.json`에 저장됩니다 (offset + 채팅별 대화 상태). 데몬 재시작해도 흐름이 유지됩니다.
+
 ---
 
 ## License

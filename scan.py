@@ -357,7 +357,7 @@ def run_scan(
         assert r.setup is not None
         alert_id = _generate_alert_id(r.symbol, "confirmed")
         report = build_report_for_alert(r, tier="confirmed", alert_id=alert_id)
-        dispatch(channels, format_report(report))
+        dispatch(channels, format_report(report), inline_keyboard=_alert_buttons(alert_id))
         state.record(
             _record_key(r.symbol, "confirmed"),
             f"confirmed:{r.setup.direction}",
@@ -368,7 +368,7 @@ def run_scan(
         assert r.setup is not None
         alert_id = _generate_alert_id(r.symbol, "forming")
         report = build_report_for_alert(r, tier="forming", alert_id=alert_id)
-        dispatch(channels, format_report(report))
+        dispatch(channels, format_report(report), inline_keyboard=_alert_buttons(alert_id))
         state.record(
             _record_key(r.symbol, "forming"),
             f"forming:{r.setup.direction}",
@@ -378,6 +378,22 @@ def run_scan(
 
     state.save()
     return EXIT_OK
+
+
+def _alert_buttons(alert_id: str) -> list[list[dict]]:
+    """Build inline-keyboard for Telegram so user can take/skip from phone.
+
+    Three buttons; callback_data is what telegram_listener.py parses.
+    """
+    return [
+        [
+            {"text": "📥 진입 (시장가)", "callback_data": f"take_market:{alert_id}"},
+        ],
+        [
+            {"text": "✏️ 진입 (가격 입력)", "callback_data": f"take_custom:{alert_id}"},
+            {"text": "⏭ 패스", "callback_data": f"skip:{alert_id}"},
+        ],
+    ]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

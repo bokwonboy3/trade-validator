@@ -80,20 +80,21 @@ class TelegramChannel:
             return None
         return cls(bot_token=token, chat_id=chat)
 
-    def send(self, message: str) -> None:
+    def send(self, message: str, *, inline_keyboard: list[list[dict]] | None = None) -> None:
+        """Send a message. `inline_keyboard` is Telegram's button matrix —
+        each inner list is a row, each dict needs `text` and `callback_data`."""
         text = message
         if len(text) > TELEGRAM_MAX_LEN:
             text = text[: TELEGRAM_MAX_LEN - 20] + "\n... [truncated]"
         url = f"{TELEGRAM_API_BASE}/bot{self.bot_token}/sendMessage"
-        resp = requests.post(
-            url,
-            json={
-                "chat_id": self.chat_id,
-                "text": text,
-                "disable_web_page_preview": True,
-            },
-            timeout=TELEGRAM_TIMEOUT_SEC,
-        )
+        payload: dict[str, Any] = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if inline_keyboard:
+            payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+        resp = requests.post(url, json=payload, timeout=TELEGRAM_TIMEOUT_SEC)
         if resp.status_code >= 400:
             raise RuntimeError(
                 f"Telegram HTTP {resp.status_code}: {resp.text[:200]}"
@@ -148,15 +149,23 @@ def append_jsonl(record: dict[str, Any], path: str = DEFAULT_JSONL_PATH) -> None
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def dispatch(channels: list[Channel], message: str) -> dict[str, bool]:
+def dispatch(
+    channels: list[Channel], message: str,
+    *,
+    inline_keyboard: list[list[dict]] | None = None,
+) -> dict[str, bool]:
     """Send `message` to each channel. Return per-channel success map.
 
+    `inline_keyboard`: passed to TelegramChannel only; other channels ignore it.
     Failures from one channel do not affect the others.
     """
     results: dict[str, bool] = {}
     for ch in channels:
         try:
-            ch.send(message)
+            if inline_keyboard is not None and isinstance(ch, TelegramChannel):
+                ch.send(message, inline_keyboard=inline_keyboard)
+            else:
+                ch.send(message)
             results[ch.name] = True
         except Exception as e:
             results[ch.name] = False

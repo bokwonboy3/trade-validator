@@ -28,3 +28,9 @@ path = "alerts.log"
 # Telegram dispatch is opt-in. When true, requires both env vars set;
 # otherwise scanner logs a warning and skips that channel.
 enabled = false
+
+[journal]
+# Phase 4 — trade journal defaults.
+# 비워두면 매번 명시적으로 size 지정해야 함. 보통 트레이드 금액 (USD) 적어두면
+# Telegram 버튼 "진입 시장가" 탭 시 자동 적용.
+# default_position_size_usd = 100
