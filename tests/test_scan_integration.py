@@ -50,8 +50,13 @@ def _load_fixture(interval: str) -> pd.DataFrame:
 
 @pytest.fixture
 def fixture_fetch(mocker):
-    """Patch fetch_klines to return saved BTCUSDT data regardless of symbol."""
+    """Patch fetch_klines to return saved BTCUSDT data regardless of symbol.
+
+    1m isn't saved in fixtures (only 4h/1h/15m), so we return an empty frame
+    when 1m is requested — exercises the FORMING-disabled path."""
     def _fake(symbol, interval, limit, **kwargs):
+        if interval == "1m":
+            return pd.DataFrame(columns=_COLS).astype({"openTime": "int64", "closeTime": "int64"})
         df = _load_fixture(interval)
         return df.head(limit).reset_index(drop=True)
     mocker.patch("scan.fetch_klines", side_effect=_fake)
