@@ -1,14 +1,19 @@
-"""Position monitor — sustains the trade after entry (Phase 5).
+"""Position monitor — sustains the trade after entry (Phase 5 + Phase 6).
 
 For every open trade in journal.db, this module:
-  1. checks the latest 1m candles for SL/TP touch → auto-closes + alerts
+  1. checks the latest 1m candles for SL/TP touch → auto-closes + alerts (P5)
   2. checks 4H Layer 1 trend; if it reversed against the trade direction,
      sends a "추세 반전" alert with inline buttons (idempotent: alerts once
-     per (trade_id, new-trend-direction) within TTL)
-  3. computes live unrealized PnL for /status command (no side effects)
+     per (trade_id, new-trend-direction) within TTL) (P5)
+  3. computes live unrealized PnL for /status command (no side effects) (P5)
+  4. detects PnL milestone crossings (±1%, ±2%, ±5%) → notify + buttons (P6)
+  5. periodically runs position_advisor (LLM) to recommend HOLD/TIGHTEN/
+     PARTIAL/EXIT every ADVISOR_INTERVAL_HOURS per trade (P6)
 
-Idempotency state: `.tv-monitor-state.json` records which reversal alerts
-have fired per trade. Pruned on load past `REVERSAL_TTL_HOURS`.
+Idempotency state: `.tv-monitor-state.json` tracks per-trade:
+  - alerted_reversals (trend reversal direction already alerted)
+  - alerted_milestones (PnL thresholds already alerted)
+  - last_advisor_at (timestamp of last advisor LLM call)
 
 Designed to be called from scan.py at the end of a cron tick.
 """
@@ -32,8 +37,15 @@ DEFAULT_MONITOR_STATE_PATH: Final = Path(".tv-monitor-state.json")
 REVERSAL_TTL_HOURS: Final[int] = 24
 TOUCH_CHECK_KLINE_LIMIT: Final[int] = 5  # last 5 1m candles
 
+# Phase 6: PnL milestone thresholds (in % — positive AND negative).
+# Each fires once per trade lifetime (idempotent via state).
+PNL_MILESTONES: Final[tuple[float, ...]] = (-5.0, -2.0, -1.0, 1.0, 2.0, 5.0)
 
-# --- Monitor state (idempotency for trend reversal alerts) ---
+# Phase 6: how often (per trade) to run the LLM position advisor.
+ADVISOR_INTERVAL_HOURS: Final[float] = 4.0
+
+
+# --- Monitor state (idempotency for trend reversal + milestone + advisor) ---
 @dataclass
 class ReversalAlertRecord:
     """One row per (trade_id, new-trend) we've already alerted on."""
@@ -44,41 +56,63 @@ class ReversalAlertRecord:
 
 @dataclass
 class MonitorState:
-    """Persisted state for reversal-alert idempotency.
+    """Persisted state for monitor idempotency.
 
-    Schema: {"alerted_reversals": {"<trade_id>": {"alerted_at": ..., "reverse_to": ...}}}
+    Schema:
+    {
+      "alerted_reversals": {"<trade_id>": {alerted_at, reverse_to}},
+      "alerted_milestones": {"<trade_id>": [list of float pcts]},
+      "last_advisor_at": {"<trade_id>": ISO timestamp}
+    }
     """
 
     alerted_reversals: dict[str, ReversalAlertRecord] = field(default_factory=dict)
+    alerted_milestones: dict[str, list[float]] = field(default_factory=dict)
+    last_advisor_at: dict[str, str] = field(default_factory=dict)
     path: Path = field(default_factory=lambda: DEFAULT_MONITOR_STATE_PATH)
 
     @classmethod
     def load(cls, path: Path | str = DEFAULT_MONITOR_STATE_PATH) -> "MonitorState":
         p = Path(path)
         if not p.exists():
-            return cls(alerted_reversals={}, path=p)
+            return cls(path=p)
         raw = json.loads(p.read_text())
         cutoff = _now_utc() - timedelta(hours=REVERSAL_TTL_HOURS)
-        fresh: dict[str, ReversalAlertRecord] = {}
+        fresh_reversals: dict[str, ReversalAlertRecord] = {}
         for tid, info in (raw.get("alerted_reversals") or {}).items():
             try:
                 rec = ReversalAlertRecord(**info)
                 if datetime.fromisoformat(rec.alerted_at) >= cutoff:
-                    fresh[tid] = rec
+                    fresh_reversals[tid] = rec
             except (TypeError, KeyError, ValueError):
                 continue
-        return cls(alerted_reversals=fresh, path=p)
+        # Milestones + advisor state don't TTL-prune — they live as long as
+        # the trade is open (cleanup happens when the trade closes).
+        alerted_milestones = {
+            tid: [float(x) for x in lst if isinstance(x, (int, float))]
+            for tid, lst in (raw.get("alerted_milestones") or {}).items()
+        }
+        last_advisor_at = dict(raw.get("last_advisor_at") or {})
+        return cls(
+            alerted_reversals=fresh_reversals,
+            alerted_milestones=alerted_milestones,
+            last_advisor_at=last_advisor_at,
+            path=p,
+        )
 
     def save(self) -> None:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         body = {
             "alerted_reversals": {
                 tid: asdict(rec) for tid, rec in self.alerted_reversals.items()
-            }
+            },
+            "alerted_milestones": self.alerted_milestones,
+            "last_advisor_at": self.last_advisor_at,
         }
         tmp.write_text(json.dumps(body, indent=2, ensure_ascii=False))
         tmp.replace(self.path)
 
+    # Reversal idempotency
     def already_alerted(self, trade_id: int, reverse_to: str) -> bool:
         rec = self.alerted_reversals.get(str(trade_id))
         if rec is None:
@@ -90,6 +124,29 @@ class MonitorState:
             alerted_at=_now_utc().isoformat(),
             reverse_to=reverse_to,
         )
+
+    # Milestone idempotency
+    def milestone_alerted(self, trade_id: int, threshold: float) -> bool:
+        return threshold in self.alerted_milestones.get(str(trade_id), [])
+
+    def record_milestone(self, trade_id: int, threshold: float) -> None:
+        key = str(trade_id)
+        self.alerted_milestones.setdefault(key, []).append(threshold)
+
+    # Advisor scheduling
+    def advisor_due(self, trade_id: int, *, interval_hours: float) -> bool:
+        """True if no advisor run for this trade OR last run is older than interval."""
+        last = self.last_advisor_at.get(str(trade_id))
+        if not last:
+            return True
+        try:
+            last_dt = datetime.fromisoformat(last)
+        except ValueError:
+            return True
+        return _now_utc() - last_dt >= timedelta(hours=interval_hours)
+
+    def record_advisor_run(self, trade_id: int) -> None:
+        self.last_advisor_at[str(trade_id)] = _now_utc().isoformat()
 
 
 # --- Event types ---
@@ -356,6 +413,194 @@ def compute_open_trade_status(
     return out
 
 
+# --- Phase 6: PnL milestone alerts ---
+def _current_pnl_pct(direction: str, entry: float, current: float) -> float:
+    if direction == "long":
+        return (current - entry) / entry * 100
+    return (entry - current) / entry * 100
+
+
+def check_pnl_milestones(
+    conn,
+    state: MonitorState,
+    *,
+    dispatcher_with_buttons: ButtonDispatcher | None = None,
+    kline_fetcher: Callable[[str], pd.DataFrame] | None = None,
+    milestones: tuple[float, ...] = PNL_MILESTONES,
+) -> list[MonitorEvent]:
+    """Detect PnL crossing predefined thresholds; alert with action buttons.
+
+    Per (trade_id, milestone), only fires once. Crossings detected:
+    - positive milestones (1, 2, 5): current_pnl_pct >= threshold
+    - negative milestones (-1, -2, -5): current_pnl_pct <= threshold
+
+    Once alerted, the milestone stays in state until trade closes (cleanup
+    happens when listener's /close fires — see `clear_trade_state`).
+    """
+    if kline_fetcher is None:
+        kline_fetcher = _fetch_latest_close_1m
+    events: list[MonitorEvent] = []
+    for trade in open_trades(conn):
+        try:
+            df = kline_fetcher(trade["symbol"])
+        except BinanceError:
+            continue
+        if df.empty:
+            continue
+        current = float(df.iloc[-1]["close"])
+        pnl_pct = _current_pnl_pct(
+            trade["direction"], trade["filled_entry"], current,
+        )
+        for threshold in milestones:
+            crossed = (
+                (threshold > 0 and pnl_pct >= threshold)
+                or (threshold < 0 and pnl_pct <= threshold)
+            )
+            if not crossed:
+                continue
+            if state.milestone_alerted(trade["id"], threshold):
+                continue
+            events.append(
+                MonitorEvent(
+                    kind="pnl_milestone",
+                    trade_id=trade["id"],
+                    symbol=trade["symbol"],
+                    direction=trade["direction"],
+                    detail={
+                        "threshold": threshold,
+                        "pnl_pct": pnl_pct,
+                        "current_price": current,
+                    },
+                )
+            )
+            if dispatcher_with_buttons:
+                tid = trade["id"]
+                icon = "🟢" if threshold > 0 else "🔴"
+                sign = "+" if threshold > 0 else ""
+                text = (
+                    f"{icon} Trade #{tid} {sign}{threshold:.0f}% PnL 도달\n"
+                    f"   {trade['symbol']} {trade['direction'].upper()}\n"
+                    f"   entry={trade['filled_entry']:.2f} → now={current:.2f}\n"
+                    f"   현재 PnL: {pnl_pct:+.2f}%\n"
+                    f"   → 어떻게 할까요?"
+                )
+                buttons = [
+                    [{"text": "🔴 즉시 종료", "callback_data": f"close_now:{tid}"}],
+                    [{"text": "👀 hold", "callback_data": f"hold:{tid}"}],
+                ]
+                dispatcher_with_buttons(text, buttons)
+            state.record_milestone(trade["id"], threshold)
+    return events
+
+
+# --- Phase 6: position advisor (LLM HOLD/TIGHTEN/PARTIAL/EXIT) ---
+def _fetch_4h_for_advisor(symbol: str) -> pd.DataFrame:
+    return fetch_klines(symbol, "4h", 100)
+
+
+def _fetch_1h_for_advisor(symbol: str) -> pd.DataFrame:
+    return fetch_klines(symbol, "1h", 100)
+
+
+def _fetch_15m_for_advisor(symbol: str) -> pd.DataFrame:
+    return fetch_klines(symbol, "15m", 100)
+
+
+def check_position_advisor(
+    conn,
+    state: MonitorState,
+    *,
+    dispatcher_with_buttons: ButtonDispatcher | None = None,
+    interval_hours: float = ADVISOR_INTERVAL_HOURS,
+    current_price_fetcher: Callable[[str], pd.DataFrame] | None = None,
+    df_4h_fetcher: Callable[[str], pd.DataFrame] | None = None,
+    df_1h_fetcher: Callable[[str], pd.DataFrame] | None = None,
+    df_15m_fetcher: Callable[[str], pd.DataFrame] | None = None,
+    advisor_evaluate: Callable | None = None,
+) -> list[MonitorEvent]:
+    """For each open trade due for advisor (interval elapsed), run the LLM
+    advisor and send HOLD/TIGHTEN/PARTIAL/EXIT recommendation.
+
+    Imports `agents.position_advisor` lazily so the module remains importable
+    in test envs without the agentic stack."""
+    if current_price_fetcher is None:
+        current_price_fetcher = _fetch_latest_close_1m
+    if df_4h_fetcher is None:
+        df_4h_fetcher = _fetch_4h_for_advisor
+    if df_1h_fetcher is None:
+        df_1h_fetcher = _fetch_1h_for_advisor
+    if df_15m_fetcher is None:
+        df_15m_fetcher = _fetch_15m_for_advisor
+    if advisor_evaluate is None:
+        from agents.position_advisor import evaluate as _ev
+        advisor_evaluate = _ev
+
+    events: list[MonitorEvent] = []
+    for trade in open_trades(conn):
+        if not state.advisor_due(trade["id"], interval_hours=interval_hours):
+            continue
+        try:
+            df_price = current_price_fetcher(trade["symbol"])
+            if df_price.empty:
+                continue
+            current = float(df_price.iloc[-1]["close"])
+            df_4h = df_4h_fetcher(trade["symbol"])
+            df_1h = df_1h_fetcher(trade["symbol"])
+            df_15m = df_15m_fetcher(trade["symbol"])
+        except BinanceError:
+            continue
+        pnl_pct = _current_pnl_pct(
+            trade["direction"], trade["filled_entry"], current,
+        )
+        result = advisor_evaluate(
+            symbol=trade["symbol"],
+            direction=trade["direction"],
+            entry=trade["filled_entry"],
+            current_price=current,
+            pnl_pct=pnl_pct,
+            df_4h=df_4h,
+            df_1h=df_1h,
+            df_15m=df_15m,
+        )
+        # Always record the run timestamp so we don't retry every cron tick on failure
+        state.record_advisor_run(trade["id"])
+        if result.failed:
+            continue
+        events.append(
+            MonitorEvent(
+                kind="advisor",
+                trade_id=trade["id"],
+                symbol=trade["symbol"],
+                direction=trade["direction"],
+                detail={
+                    "action": result.action,
+                    "confidence": result.confidence,
+                    "rationale": result.rationale,
+                    "pnl_pct": pnl_pct,
+                },
+            )
+        )
+        if dispatcher_with_buttons:
+            tid = trade["id"]
+            action_icon = {
+                "HOLD": "👀", "TIGHTEN": "🔒",
+                "PARTIAL": "✂️", "EXIT": "🔴",
+            }.get(result.action, "📊")
+            text = (
+                f"{action_icon} Trade #{tid} advisor 평가 → {result.action}\n"
+                f"   {trade['symbol']} {trade['direction'].upper()}\n"
+                f"   entry={trade['filled_entry']:.2f} → now={current:.2f}\n"
+                f"   PnL: {pnl_pct:+.2f}%  confidence: {result.confidence}/10\n"
+                f"   사유: {result.rationale}"
+            )
+            buttons = [
+                [{"text": "🔴 즉시 종료", "callback_data": f"close_now:{tid}"}],
+                [{"text": "👀 hold", "callback_data": f"hold:{tid}"}],
+            ]
+            dispatcher_with_buttons(text, buttons)
+    return events
+
+
 # --- Orchestrator (called from scan.py cron) ---
 def run_position_monitor(
     db_path: Path | None = None,
@@ -364,8 +609,8 @@ def run_position_monitor(
     dispatcher: TextDispatcher | None = None,
     dispatcher_with_buttons: ButtonDispatcher | None = None,
 ) -> list[MonitorEvent]:
-    """Single entrypoint for cron — runs both SL/TP and reversal checks,
-    saves state. Returns combined event list.
+    """Single entrypoint for cron — runs SL/TP, reversal, milestone, advisor
+    checks; saves state. Returns combined event list.
 
     `db_path` defaults to env JOURNAL_DB then journal.db. Set MONITOR_DISABLED=1
     to no-op (used by the default test environment)."""
@@ -379,8 +624,21 @@ def run_position_monitor(
         reversal_events = check_trend_reversals(
             conn, state, dispatcher_with_buttons=dispatcher_with_buttons,
         )
+        milestone_events = check_pnl_milestones(
+            conn, state, dispatcher_with_buttons=dispatcher_with_buttons,
+        )
+        # Advisor calls the LLM and can be slow + costs token quota.
+        # Wrap in try/except so a broken advisor doesn't kill the monitor.
+        try:
+            advisor_events = check_position_advisor(
+                conn, state, dispatcher_with_buttons=dispatcher_with_buttons,
+            )
+        except Exception as e:
+            import sys
+            print(f"[monitor] advisor error: {type(e).__name__}: {e}", file=sys.stderr)
+            advisor_events = []
     state.save()
-    return sl_tp_events + reversal_events
+    return sl_tp_events + reversal_events + milestone_events + advisor_events
 
 
 def _now_utc() -> datetime:

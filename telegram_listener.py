@@ -238,6 +238,16 @@ def handle_observe(*, token: str, chat_id: int, trade_id: int) -> None:
     )
 
 
+def handle_hold(*, token: str, chat_id: int, trade_id: int) -> None:
+    """Acknowledge a PnL milestone or advisor alert with 'hold'. No state
+    change needed — milestones are idempotent per (trade, threshold), advisor
+    runs on its own interval. This is purely user acknowledgment."""
+    send_message(
+        token, chat_id,
+        f"👀 Trade #{trade_id} hold 확인. 다음 milestone 또는 advisor에서 재평가.",
+    )
+
+
 def _format_status_text(statuses: list) -> str:
     """Render compute_open_trade_status output for /status reply."""
     if not statuses:
@@ -439,6 +449,13 @@ def process_update(
                 send_message(token, chat_id, f"❌ trade id 파싱 실패: {payload!r}")
                 return
             handle_observe(token=token, chat_id=chat_id, trade_id=tid)
+        elif action == "hold":
+            try:
+                tid = int(payload)
+            except ValueError:
+                send_message(token, chat_id, f"❌ trade id 파싱 실패: {payload!r}")
+                return
+            handle_hold(token=token, chat_id=chat_id, trade_id=tid)
         else:
             send_message(token, chat_id, f"알 수 없는 action: {action}")
         return
