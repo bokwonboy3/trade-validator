@@ -41,7 +41,8 @@ def test_pending_layer3_message():
     out = format_report(r)
     assert "PENDING" in out
     assert "Score: 4/5" in out  # still passes 4/5 with other 4 perfect
-    assert "Recommendation: ENTER" in out
+    # Nuanced recommendation: 4/5 with Layer 3 pending → PLAN OK (not ENTER)
+    assert "Recommendation: PLAN OK" in out
     # Suggestion mentions re-running
     assert "재실행" in out
 
@@ -104,3 +105,64 @@ def test_no_emoji_fail_label():
     r.layer_5 = _bad({"rr": 2.0, "reward": 600.0, "risk": 300.0, "min_rr": 3.0})
     out = format_report(r, no_emoji=True)
     assert "[FAIL]" in out
+
+
+# --- Nuanced recommendation ---
+def test_recommendation_5_of_5_is_strong_enter():
+    """5/5 → ENTER with strong-signal note."""
+    out = format_report(_full_pass_report())
+    assert "Score: 5/5" in out
+    assert "ENTER" in out
+    assert "강한 신호" in out
+
+
+def test_recommendation_4_of_5_with_layer3_pass_is_enter():
+    """4/5 but Layer 3 confirmed → ENTER (some non-trigger layer failed)."""
+    r = _full_pass_report()
+    # Fail Layer 5 instead — Layer 3 still passes
+    r.layer_5 = _bad({"rr": 2.0, "reward": 600.0, "risk": 300.0, "min_rr": 3.0})
+    out = format_report(r)
+    assert "Score: 4/5" in out
+    assert "ENTER" in out
+    assert "Layer 3 거부 신호 확정" in out
+
+
+def test_recommendation_4_of_5_with_layer3_fail_is_watch():
+    """4/5 with Layer 3 ❌ (level reached, no rejection) → WATCH, not ENTER.
+
+    This is the most common 4/5 case in practice and was being mis-labeled
+    as ENTER before this fix.
+    """
+    r = _full_pass_report()
+    r.layer_3 = _bad({"reason": "no_rejection_with_volume_in_touch_window"})
+    out = format_report(r)
+    assert "Score: 4/5" in out
+    assert "WATCH" in out
+    assert "ENTER" not in out.split("Recommendation:")[1].split("\n")[0]
+    assert "거부 신호 없음" in out
+
+
+def test_recommendation_4_of_5_with_layer3_pending_is_plan_ok():
+    """4/5 with Layer 3 ⏸ pending (fresh level) → PLAN OK."""
+    r = _full_pass_report()
+    r.layer_3 = _pending({"reason": "no_touch_in_history"})
+    out = format_report(r)
+    assert "Score: 4/5" in out
+    assert "PLAN OK" in out
+    assert "도달 시" in out
+
+
+def test_recommendation_below_threshold_is_pass():
+    r = _full_pass_report()
+    r.layer_1 = _bad({"ma25": 1, "ma99": 2})
+    r.layer_3 = _bad({})
+    out = format_report(r)
+    assert "Score: 3/5" in out
+    assert "Recommendation: PASS" in out
+
+
+def test_no_emoji_watch_label():
+    r = _full_pass_report()
+    r.layer_3 = _bad({"reason": "no_rejection_with_volume_in_touch_window"})
+    out = format_report(r, no_emoji=True)
+    assert "[WATCH]" in out
