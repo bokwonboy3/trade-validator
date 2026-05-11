@@ -19,6 +19,7 @@ import pandas as pd
 
 from agents import (
     macro,
+    memory,
     meta_judge,
     microstructure,
     recommender,
@@ -104,7 +105,34 @@ def run_agentic_analysis(
     direction: Direction,
     client: Any | None = None,
 ) -> AgentVerdict | None:
-    """Run the agentic tier. Returns None when no backend available."""
+    """Run the agentic tier. Returns AgentVerdict only (compat wrapper).
+
+    For full specialist outputs as well, use run_agentic_analysis_with_specialists.
+    """
+    result = run_agentic_analysis_with_specialists(
+        ev, df_15m=df_15m, df_1m=df_1m, df_4h=df_4h, df_1h=df_1h,
+        symbol=symbol, entry=entry, sl=sl, tp=tp, direction=direction,
+        client=client,
+    )
+    return result[0] if result else None
+
+
+def run_agentic_analysis_with_specialists(
+    ev: SetupEvaluation,
+    *,
+    df_15m: pd.DataFrame,
+    df_1m: pd.DataFrame,
+    df_4h: pd.DataFrame,
+    df_1h: pd.DataFrame,
+    symbol: str,
+    entry: float,
+    sl: float,
+    tp: float,
+    direction: Direction,
+    client: Any | None = None,
+) -> tuple[AgentVerdict, list[SpecialistOutput]] | None:
+    """Run the agentic tier. Returns (AgentVerdict, list[SpecialistOutput]) for
+    rich display, or None when no backend available."""
     if client is None:
         client = get_default_client()
     if client is None:
@@ -170,8 +198,23 @@ def run_agentic_analysis(
             )
 
     meta = meta_judge.judge(specialists)
-    return recommender.recommend(
+    verdict = recommender.recommend(
         tier1_verdict=tier1,
         specialists=specialists,
         meta=meta,
     )
+
+    # Record to market memory for cross-run continuity. Best-effort —
+    # any IO error is logged but doesn't fail the verdict.
+    try:
+        memory.record_entry(
+            symbol=symbol,
+            tier1_verdict=tier1,
+            agent_verdict=verdict.verdict,
+            confidence=verdict.confidence,
+            note=verdict.rationale[:150],
+        )
+    except Exception as e:
+        print(f"[agentic] memory record failed: {e}", file=sys.stderr)
+
+    return verdict, specialists

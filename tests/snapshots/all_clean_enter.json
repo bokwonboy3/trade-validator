@@ -1,0 +1,8 @@
+{
+  "verdict": "ENTER",
+  "tier1": "ENTER",
+  "downgraded": false,
+  "confidence_bucket": "high",
+  "n_contradictions": 0,
+  "hallucination_risk": "low"
+}

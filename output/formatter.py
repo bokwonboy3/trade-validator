@@ -23,6 +23,8 @@ class ValidationReport:
     # Agentic tier output. None when API key absent or analysis skipped.
     # Type is `Any` to avoid circular dependency with agents.types.
     agent_verdict: object | None = None
+    # Per-specialist outputs (also `Any` to avoid circular dep).
+    agent_specialists: list[object] | None = None
 
     @property
     def total_score(self) -> int:
@@ -229,9 +231,17 @@ def format_report(r: ValidationReport, *, no_emoji: bool = False) -> str:
         a_tier1 = getattr(av, "tier1_verdict", None)
         if a_verdict is not None:
             lines.append("")
+            # Per-specialist findings (when available)
+            if r.agent_specialists:
+                lines.append("🤖 Specialist Findings:")
+                for s in r.agent_specialists:
+                    line = _format_specialist_line(s, no_emoji=no_emoji)
+                    if line:
+                        lines.append(f"  {line}")
+                lines.append("")
             arrow = f" (Tier 1: {a_tier1} → {a_verdict})" if a_downgraded else ""
             lines.append(
-                f"🤖 Agent Verdict: {a_verdict}{arrow}  (confidence {a_conf}%)"
+                f"🤖 Final Verdict: {a_verdict}{arrow}  (confidence {a_conf}%)"
             )
             if a_rationale:
                 lines.append(f"   → {a_rationale}")
@@ -272,6 +282,55 @@ def _build_suggestions(r: ValidationReport) -> list[str]:
             "Layer 3: entry 도달 후 도구 재실행 — 거부 캔들 평가 가능해짐"
         )
     return out
+
+
+def _format_specialist_line(spec: object, *, no_emoji: bool = False) -> str:
+    """One-line summary of a specialist's output for inline alert display.
+
+    Uses duck-typing on SpecialistOutput so formatter stays decoupled from
+    agents package. Returns "" when the input doesn't look like a spec output.
+    """
+    name = getattr(spec, "name", None)
+    failed = getattr(spec, "failed", False)
+    if name is None:
+        return ""
+
+    if failed:
+        reason = getattr(spec, "failure_reason", "")[:80]
+        mark = "[FAIL]" if no_emoji else "⚠"
+        return f"{mark} {name}: failed ({reason})"
+
+    findings = getattr(spec, "findings", {}) or {}
+    confidence = getattr(spec, "confidence", 0)
+    rationale = getattr(spec, "rationale", "")[:100]
+
+    # Pick the most informative key per specialist (best-effort)
+    primary = ""
+    if name == "microstructure":
+        rq = findings.get("rejection_quality", "?")
+        primary = f"rejection={rq}"
+    elif name == "trend_context":
+        ts = findings.get("trend_strength", "?")
+        tq = findings.get("trend_quality", "?")
+        primary = f"strength={ts}/10 quality={tq}"
+    elif name == "volume_regime":
+        regime = findings.get("regime", "?")
+        primary = f"regime={regime}"
+    elif name == "risk":
+        slq = findings.get("sl_quality", "?")
+        tpr = findings.get("tp_realism", "?")
+        hold = findings.get("expected_hold_hours")
+        primary = f"sl={slq} tp={tpr} hold={hold}h"
+    elif name == "macro":
+        bias = findings.get("macro_bias", "?")
+        events = findings.get("unusual_events") or []
+        events_str = f" events={len(events)}" if events else ""
+        primary = f"bias={bias}{events_str}"
+    else:
+        primary = ", ".join(f"{k}={v}" for k, v in list(findings.items())[:2])
+
+    rationale_part = f" — {rationale}" if rationale else ""
+    return f"· {name} (conf {confidence}/10) {primary}{rationale_part}"
 
 
 def _build_advisory(candle: Candle, direction: str) -> list[str]:
