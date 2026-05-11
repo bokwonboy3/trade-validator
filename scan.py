@@ -34,6 +34,7 @@ from analysis.scanner_logic import (
     synthesize_setup,
 )
 from data.binance import BinanceError, fetch_klines
+from monitor import run_position_monitor
 from output.formatter import ValidationReport, format_report
 from output.notify import append_jsonl, build_channels, dispatch
 from scanner_config import ScannerConfig, load_config
@@ -300,6 +301,8 @@ def run_scan(
             if r.error:
                 print(f"❌ {r.symbol}: {r.error}", file=sys.stderr)
 
+    channels = build_channels(cfg.notifications)
+
     confirmed = [
         r for r in results
         if r.passes and r.evaluation.total_score >= cfg.thresholds.min_score
@@ -311,11 +314,28 @@ def run_scan(
 
     if not confirmed and not forming:
         _log("\nNo setups crossed threshold.", quiet=quiet)
-        state.save()
-        return EXIT_OK
+    else:
+        _dispatch_new_setups(state, confirmed, forming, channels, quiet=quiet)
 
-    # Idempotency: tier prefix in the signature so a FORMING alert doesn't
-    # suppress a later CONFIRMED alert on the same setup (and vice versa).
+    state.save()
+
+    # Phase 5: monitor open trades regardless of new-setup outcome.
+    # SL/TP touch → auto-close; 4H trend reversal → alert with inline buttons.
+    _run_position_monitor_step(channels, quiet=quiet)
+
+    return EXIT_OK
+
+
+def _dispatch_new_setups(
+    state: AlertState,
+    confirmed: list[ScanResult],
+    forming: list[ScanResult],
+    channels: list,
+    *,
+    quiet: bool,
+) -> None:
+    """Idempotency check + dispatch. Tier prefix in the signature so a FORMING
+    alert doesn't suppress a later CONFIRMED alert on the same setup."""
     def _record_key(symbol: str, tier: str) -> str:
         return f"{tier}:{symbol}"
 
@@ -344,10 +364,8 @@ def run_scan(
 
     if not new_confirmed and not new_forming:
         _log("No new setups to dispatch.", quiet=quiet)
-        state.save()
-        return EXIT_OK
+        return
 
-    channels = build_channels(cfg.notifications)
     _log(
         f"\ndispatching {len(new_confirmed)} CONFIRMED + {len(new_forming)} FORMING "
         f"→ {[c.name for c in channels]}",
@@ -376,8 +394,29 @@ def run_scan(
         )
         _record_jsonl(r, tier="forming", alert_id=alert_id)
 
-    state.save()
-    return EXIT_OK
+
+def _run_position_monitor_step(channels: list, *, quiet: bool) -> None:
+    """Wrap monitor.run_position_monitor with dispatchers tied to the same
+    channels scan uses. Isolated try/except so monitor failures don't take
+    down the cron tick."""
+    def text_dispatch(msg: str) -> None:
+        dispatch(channels, msg)
+
+    def button_dispatch(msg: str, inline_keyboard: list[list[dict]]) -> None:
+        dispatch(channels, msg, inline_keyboard=inline_keyboard)
+
+    try:
+        events = run_position_monitor(
+            dispatcher=text_dispatch,
+            dispatcher_with_buttons=button_dispatch,
+        )
+        if events:
+            summary = ", ".join(f"{e.kind}#{e.trade_id}" for e in events)
+            _log(f"\n[monitor] {len(events)} event(s): {summary}", quiet=quiet)
+        else:
+            _log("\n[monitor] no events", quiet=quiet)
+    except Exception as e:
+        print(f"[monitor] error: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 def _alert_buttons(alert_id: str) -> list[list[dict]]:

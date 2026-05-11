@@ -418,3 +418,129 @@ def test_empty_message_text_ignored(captured, tmpdb):
     )
     # Nothing should be sent
     assert _send_texts(captured) == []
+
+
+# --- Phase 5: close_now / observe callbacks ---
+def test_close_now_callback_closes_trade(captured, tmpdb, alert_in_db, mocker):
+    """🔴 즉시 종료 button: fetches current price, closes trade."""
+    import pandas as pd
+    from data.journal_db import record_trade
+    with connect(tmpdb) as conn:
+        record_trade(
+            conn, alert_id=alert_in_db,
+            filled_entry=80000, filled_sl=79700, filled_tp=80900,
+            position_size=100,
+        )
+    # Mock the price fetch inside handle_close_now
+    mocker.patch(
+        "data.binance.fetch_klines",
+        return_value=pd.DataFrame({
+            "openTime": [0], "open": [80300], "high": [80350], "low": [80250],
+            "close": [80300], "volume": [1.0], "closeTime": [1],
+        }),
+    )
+    tl.process_update(
+        {
+            "update_id": 1,
+            "callback_query": {
+                "id": "cb-close",
+                "data": "close_now:1",
+                "message": {"chat": {"id": 12345}},
+            },
+        },
+        token="T", db_path=tmpdb, conv_states={}, default_size=None,
+    )
+    with connect(tmpdb) as conn:
+        row = conn.execute("SELECT * FROM trades WHERE id=1").fetchone()
+    assert row["status"] == "closed"
+    assert row["close_reason"] == "reversal_close"
+    assert any("즉시 종료" in t for t in _send_texts(captured))
+
+
+def test_close_now_unknown_trade(captured, tmpdb):
+    tl.process_update(
+        {
+            "update_id": 1,
+            "callback_query": {
+                "id": "cb",
+                "data": "close_now:999",
+                "message": {"chat": {"id": 12345}},
+            },
+        },
+        token="T", db_path=tmpdb, conv_states={}, default_size=None,
+    )
+    assert any("없거나 이미 종료" in t for t in _send_texts(captured))
+
+
+def test_close_now_bad_id_format(captured, tmpdb):
+    tl.process_update(
+        {
+            "update_id": 1,
+            "callback_query": {
+                "id": "cb",
+                "data": "close_now:abc",
+                "message": {"chat": {"id": 12345}},
+            },
+        },
+        token="T", db_path=tmpdb, conv_states={}, default_size=None,
+    )
+    assert any("파싱 실패" in t for t in _send_texts(captured))
+
+
+def test_observe_callback_just_acknowledges(captured, tmpdb):
+    tl.process_update(
+        {
+            "update_id": 1,
+            "callback_query": {
+                "id": "cb",
+                "data": "observe:42",
+                "message": {"chat": {"id": 12345}},
+            },
+        },
+        token="T", db_path=tmpdb, conv_states={}, default_size=None,
+    )
+    texts = _send_texts(captured)
+    assert any("관찰 유지" in t for t in texts)
+    assert any("42" in t for t in texts)
+
+
+# --- Phase 5: /status command ---
+def test_status_command_empty(captured, tmpdb, monkeypatch):
+    monkeypatch.delenv("MONITOR_DISABLED", raising=False)
+    conv = tl.ConvState()
+    tl.handle_reply(
+        token="T", chat_id=12345, text="/status",
+        conv=conv, db_path=tmpdb, default_size=None,
+    )
+    assert any("열린 trade 없음" in t for t in _send_texts(captured))
+
+
+def test_status_command_with_open_trade(captured, tmpdb, alert_in_db, mocker, monkeypatch):
+    import pandas as pd
+    from data.journal_db import record_trade
+    monkeypatch.delenv("MONITOR_DISABLED", raising=False)
+    with connect(tmpdb) as conn:
+        record_trade(
+            conn, alert_id=alert_in_db,
+            filled_entry=80000, filled_sl=79700, filled_tp=80900,
+            position_size=100,
+        )
+    # Patch the kline call inside compute_open_trade_status via the function name
+    mocker.patch(
+        "monitor._fetch_latest_close_1m",
+        return_value=pd.DataFrame({
+            "openTime": [0], "open": [80400], "high": [80450], "low": [80350],
+            "close": [80400], "volume": [1.0], "closeTime": [1],
+        }),
+    )
+    conv = tl.ConvState()
+    tl.handle_reply(
+        token="T", chat_id=12345, text="/status",
+        conv=conv, db_path=tmpdb, default_size=None,
+    )
+    texts = _send_texts(captured)
+    body = "\n".join(texts)
+    assert "BTCUSDT" in body
+    assert "80400" in body or "80,400" in body
+    # Long entered at 80000, now 80400 → +0.5%
+    assert "+0.50%" in body
