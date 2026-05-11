@@ -182,11 +182,13 @@ def format_summary_line(r: ScanResult, threshold: int) -> str:
     return line
 
 
-def build_report_for_alert(r: ScanResult, *, tier: Tier = "confirmed") -> ValidationReport:
+def build_report_for_alert(
+    r: ScanResult, *, tier: Tier = "confirmed", alert_id: str | None = None,
+) -> ValidationReport:
     """Wrap a ScanResult into a ValidationReport for the formatter.
 
-    `tier="forming"` injects a header noting the signal is intra-candle —
-    user should wait for 15m close to confirm.
+    `tier="forming"` injects a header noting the signal is intra-candle.
+    `alert_id` makes the report cross-referenceable in journal CLI.
     """
     assert r.setup is not None and r.evaluation is not None
     ev = r.evaluation
@@ -207,9 +209,10 @@ def build_report_for_alert(r: ScanResult, *, tier: Tier = "confirmed") -> Valida
         layer_3=ev.layer_3,
         layer_4=ev.layer_4,
         layer_5=ev.layer_5,
-        advisory_15m=None,  # scanner mode skips advisory to keep alerts deterministic
+        advisory_15m=None,
         agent_verdict=r.agent_verdict,
         agent_specialists=r.agent_specialists,
+        alert_id=alert_id,
     )
 
 
@@ -219,12 +222,22 @@ def _log(msg: str, *, quiet: bool, file=sys.stdout) -> None:
         print(msg, file=file)
 
 
-def _record_jsonl(r: ScanResult, *, tier: str) -> None:
+def _generate_alert_id(symbol: str, tier: str) -> str:
+    """Stable short ID for cross-referencing: BTC-202605110430-confirmed.
+    Same setup at same minute = same ID (idempotent under retry)."""
+    from datetime import datetime, timezone
+    short_symbol = symbol.replace("USDT", "").replace("BUSD", "")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    return f"{short_symbol}-{ts}-{tier}"
+
+
+def _record_jsonl(r: ScanResult, *, tier: str, alert_id: str) -> None:
     """Append a structured record per dispatched alert."""
     if r.setup is None or r.evaluation is None:
         return
     av = r.agent_verdict
     record = {
+        "alert_id": alert_id,
         "symbol": r.symbol,
         "tier": tier,
         "direction": r.setup.direction,
@@ -342,24 +355,26 @@ def run_scan(
     )
     for r in new_confirmed:
         assert r.setup is not None
-        report = build_report_for_alert(r, tier="confirmed")
+        alert_id = _generate_alert_id(r.symbol, "confirmed")
+        report = build_report_for_alert(r, tier="confirmed", alert_id=alert_id)
         dispatch(channels, format_report(report))
         state.record(
             _record_key(r.symbol, "confirmed"),
             f"confirmed:{r.setup.direction}",
             r.setup.sl_swing_price,
         )
-        _record_jsonl(r, tier="confirmed")
+        _record_jsonl(r, tier="confirmed", alert_id=alert_id)
     for r in new_forming:
         assert r.setup is not None
-        report = build_report_for_alert(r, tier="forming")
+        alert_id = _generate_alert_id(r.symbol, "forming")
+        report = build_report_for_alert(r, tier="forming", alert_id=alert_id)
         dispatch(channels, format_report(report))
         state.record(
             _record_key(r.symbol, "forming"),
             f"forming:{r.setup.direction}",
             r.setup.sl_swing_price,
         )
-        _record_jsonl(r, tier="forming")
+        _record_jsonl(r, tier="forming", alert_id=alert_id)
 
     state.save()
     return EXIT_OK

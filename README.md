@@ -321,6 +321,58 @@ tail -f /Users/bokwon/trade-validator/scan.log
 
 ---
 
+## Trade Journal (Phase 4)
+
+실제 트레이드 결과를 SQLite에 기록해서 framework 정확도 검증.
+
+### 사용 흐름
+
+```bash
+# 1) alerts.jsonl을 DB에 import (한 번만 또는 정기적으로)
+python journal.py migrate
+
+# 2) 알람 받음 (Telegram에 "Alert ID: BTC-202605110430-confirmed")
+
+# 3a) 진입했으면 trade 기록
+python journal.py take BTC-202605110430-confirmed \
+    --entry 80937 --sl 80637 --tp 81837 --size 1000
+
+# 3b) 건너뛰었으면 skip 기록 (왜 건너뛰었는지 메모)
+python journal.py skip BTC-202605110430-confirmed --reason "macro bearish"
+
+# 4) 열린 trade 확인
+python journal.py open
+
+# 5) trade 종료 후 결과 기록
+python journal.py close 1 --price 81600 --reason "tp_near"
+
+# 6) 누적 통계 (framework 정확도)
+python journal.py stats --days 30
+```
+
+### Stats 출력 예시
+
+```
+=== Trade Stats (최근 30일) ===
+  Trades: 12 (8W / 4L)
+  Win rate: 66.7%
+  Avg PnL: +1.45%
+  Avg win: +3.20%  |  Avg loss: -2.05%
+  Expectancy: +1.45% per trade
+
+  Tier 1 score별:
+    4/5: 9 trades, win_rate=56%, avg=+0.80%
+    5/5: 3 trades, win_rate=100%, avg=+3.40%
+
+  Agent verdict별:
+    ENTER: 5 trades, win_rate=80%, avg=+2.10%
+    WATCH: 7 trades, win_rate=57%, avg=+1.00%
+```
+
+→ **5/5가 4/5보다 훨씬 정확한지**, **Agent ENTER가 실제로 가치 있는지** 데이터로 답.
+
+---
+
 ## Agentic 분석 설정 (Phase 2 옵션)
 
 Tier 1 (5-Layer) 위에 LLM specialist agents를 얹어 알람 컨텍스트를 풍부하게 만듭니다.
