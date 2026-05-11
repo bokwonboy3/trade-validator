@@ -6,10 +6,12 @@ should fall back to Tier 1 alone.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 
 from agents import meta_judge, microstructure, recommender, stub_specialists
-from agents.client import AgentClient, get_default_client_or_none
+from agents.backend import get_default_client
 from agents.types import AgentVerdict, SpecialistOutput, Verdict
 from analysis.layers import Direction, SetupEvaluation
 
@@ -42,11 +44,11 @@ def run_agentic_analysis(
     df_1m: pd.DataFrame,
     entry: float,
     direction: Direction,
-    client: AgentClient | None = None,
+    client: Any | None = None,
 ) -> AgentVerdict | None:
-    """Run the agentic tier. Returns None when disabled (no API key)."""
+    """Run the agentic tier. Returns None when disabled (no backend available)."""
     if client is None:
-        client = get_default_client_or_none()
+        client = get_default_client()
     if client is None:
         return None
 

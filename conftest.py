@@ -4,8 +4,15 @@ Markers:
   live   — touches the real Binance API or external network. Skipped by default
            to keep `pytest tests/` fast and offline. Run manually with
            `pytest -m live` or `pytest --run-live`.
+
+Auto-disable agentic tier in tests unless explicitly opted in:
+  Default scan/integration tests should NOT spawn the real claude CLI.
+  Set AGENT_BACKEND=none in the test environment by default; tests that need
+  agentic analysis can override with their own monkeypatch.
 """
 from __future__ import annotations
+
+import os
 
 import pytest
 
@@ -17,6 +24,17 @@ def pytest_addoption(parser):
         default=False,
         help="Run live tests that hit the real Binance API or external services.",
     )
+
+
+@pytest.fixture(autouse=True)
+def _disable_agent_backend_by_default(monkeypatch):
+    """Force agent backend off for every test, unless the test explicitly
+    re-enables it via its own monkeypatch. Prevents the test suite from
+    spawning a real `claude` CLI subprocess (which is slow and may make a
+    network call against the user's plan quota)."""
+    # Only set if not already overridden by the test itself.
+    if "AGENT_BACKEND" not in os.environ:
+        monkeypatch.setenv("AGENT_BACKEND", "none")
 
 
 def pytest_configure(config):

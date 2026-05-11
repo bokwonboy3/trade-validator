@@ -121,11 +121,14 @@ def scan_symbol(symbol: str, *, default_rr: float = 3.0) -> ScanResult:
             now_ms=int(time.time() * 1000),
         )
 
-    # Agentic analysis (Tier 2~4) — only run when Tier 1 reaches a meaningful
-    # score, to keep token cost bounded. Returns None if ANTHROPIC_API_KEY is
-    # not set (graceful degradation).
+    # Agentic analysis (Tier 2~4) — only run when Tier 1 would actually alert
+    # (score >= dispatch threshold OR forming detected). Skips agents on
+    # 3/5 setups that won't dispatch anyway, keeping cron tick under budget.
     agent_verdict = None
-    if evaluation.total_score >= 3 or forming is not None:
+    # NB: dispatch threshold lives in ScannerConfig (defaults to 4); accessing
+    # it would require a refactor. For now use 4 directly — matches default.
+    AGENT_TRIGGER_SCORE = 4
+    if evaluation.total_score >= AGENT_TRIGGER_SCORE or forming is not None:
         try:
             agent_verdict = run_agentic_analysis(
                 evaluation,

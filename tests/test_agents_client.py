@@ -214,8 +214,10 @@ def test_tier1_verdict_4_of_5_l3_pending_is_plan_ok():
     assert tier1_verdict_from_evaluation(_ev(4, l3_status="pending")) == "PLAN_OK"
 
 
-# --- run_agentic_analysis returns None when API key absent ---
-def test_run_agentic_returns_none_without_api_key(monkeypatch):
+# --- run_agentic_analysis returns None when no backend available ---
+def test_run_agentic_returns_none_when_no_backend(monkeypatch):
+    """Backend explicitly disabled + no API key → None (graceful degradation)."""
+    monkeypatch.setenv("AGENT_BACKEND", "none")
     monkeypatch.delenv(ANTHROPIC_API_KEY_ENV, raising=False)
     ev = _ev(4, l3_status="fail")
     df = _df([{
@@ -226,4 +228,4 @@ def test_run_agentic_returns_none_without_api_key(monkeypatch):
     result = run_agentic_analysis(
         ev, df_15m=df, df_1m=df, entry=100.0, direction="long",
     )
-    assert result is None  # graceful degradation
+    assert result is None
