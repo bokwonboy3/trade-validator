@@ -25,6 +25,8 @@ class ValidationReport:
     agent_verdict: object | None = None
     # Per-specialist outputs (also `Any` to avoid circular dep).
     agent_specialists: list[object] | None = None
+    # Alert ID for cross-referencing in journal CLI (None for validate.py path)
+    alert_id: str | None = None
 
     @property
     def total_score(self) -> int:
@@ -117,6 +119,8 @@ def _recommendation(r: "ValidationReport") -> tuple[str, str, str]:
 def format_report(r: ValidationReport, *, no_emoji: bool = False) -> str:
     lines: list[str] = []
     lines.append("=== Setup Validation ===")
+    if r.alert_id:
+        lines.append(f"Alert ID: {r.alert_id}")
     lines.append(f"Symbol: {r.symbol}")
     lines.append(f"Direction: {r.direction.upper()}")
     lines.append(
