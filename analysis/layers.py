@@ -11,7 +11,7 @@ and return results without performing I/O.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import pandas as pd
 
@@ -20,17 +20,17 @@ from analysis.candles import (
     is_rejection,
     is_volume_spike,
 )
-from analysis.indicators import latest_ma
+from analysis.indicators import add_ma, latest_ma
 from analysis.levels import find_swings
 
 Direction = Literal["long", "short"]
 Status = Literal["pass", "fail", "pending"]
 
-LAYER2_TOLERANCE_PCT = 0.003  # ±0.3%
-LAYER3_TOUCH_TOLERANCE_PCT = 0.003  # ±0.3%
-LAYER4_SL_TOLERANCE_PCT = 0.005  # ±0.5%
-LAYER5_MIN_RR = 3.0
-ONE_HOUR_MS = 60 * 60 * 1000
+LAYER2_TOLERANCE_PCT: Final[float] = 0.003  # ±0.3%
+LAYER3_TOUCH_TOLERANCE_PCT: Final[float] = 0.003  # ±0.3%
+LAYER4_SL_TOLERANCE_PCT: Final[float] = 0.005  # ±0.5%
+LAYER5_MIN_RR: Final[float] = 3.0
+ONE_HOUR_MS: Final[int] = 60 * 60 * 1000
 
 
 class InputError(ValueError):
@@ -84,6 +84,20 @@ def layer_2_setup_zone(
         levels.append(("ma25_1h", float(ma25)))
     if not pd.isna(ma99):
         levels.append(("ma99_1h", float(ma99)))
+
+    if not levels:
+        # No swings AND no MA values — insufficient data for evaluation.
+        return LayerResult(
+            score=0,
+            status="fail",
+            detail={
+                "closest_label": "(none)",
+                "closest_price": 0.0,
+                "distance_pct": 0.0,
+                "all_levels": [],
+                "reason": "no_levels_found",
+            },
+        )
 
     # Closest level by absolute percent distance from entry
     best_label, best_price, best_dist = "", 0.0, float("inf")
@@ -281,7 +295,7 @@ def validate_inputs(entry: float, sl: float, tp: float, direction: Direction) ->
                 f"SHORT: TP ({tp:,.2f}) must be below Entry ({entry:,.2f})"
             )
     else:
-        raise InputError(f"unknown direction: {direction}")
+        raise InputError(f"direction must be 'long' or 'short' (got: {direction!r})")
 
 
 def layer_5_risk_reward(
@@ -305,4 +319,61 @@ def layer_5_risk_reward(
         score=1 if passed else 0,
         status="pass" if passed else "fail",
         detail={"rr": rr, "reward": reward, "risk": risk, "min_rr": min_rr},
+    )
+
+
+PASS_THRESHOLD: Final[int] = 4
+
+
+@dataclass(frozen=True)
+class SetupEvaluation:
+    """Bundled output of all 5 layers + score helpers."""
+
+    layer_1: LayerResult
+    layer_2: LayerResult
+    layer_3: LayerResult
+    layer_4: LayerResult
+    layer_5: LayerResult
+
+    @property
+    def total_score(self) -> int:
+        return (
+            self.layer_1.score
+            + self.layer_2.score
+            + self.layer_3.score
+            + self.layer_4.score
+            + self.layer_5.score
+        )
+
+    @property
+    def passes(self) -> bool:
+        return self.total_score >= PASS_THRESHOLD
+
+    def as_layers(self) -> list[LayerResult]:
+        return [self.layer_1, self.layer_2, self.layer_3, self.layer_4, self.layer_5]
+
+
+def evaluate_setup(
+    df_4h: pd.DataFrame,
+    df_1h: pd.DataFrame,
+    df_15m: pd.DataFrame,
+    *,
+    entry: float,
+    sl: float,
+    tp: float,
+    direction: Direction,
+) -> SetupEvaluation:
+    """Run all 5 layers in order on the given OHLCV frames.
+
+    Adds MA columns to the 4h and 1h frames as needed. Layer 3 uses raw 1h+15m
+    (no MA needed). Inputs are assumed already validated via validate_inputs().
+    """
+    df_4h_ma = add_ma(df_4h, [25, 99])
+    df_1h_ma = add_ma(df_1h, [25, 99])
+    return SetupEvaluation(
+        layer_1=layer_1_trend(df_4h_ma, direction),
+        layer_2=layer_2_setup_zone(df_1h_ma, entry),
+        layer_3=layer_3_rejection(df_1h, df_15m, entry, direction),
+        layer_4=layer_4_sl_structure(df_1h, sl, direction),
+        layer_5=layer_5_risk_reward(entry, sl, tp, direction),
     )

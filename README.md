@@ -4,6 +4,101 @@ BTC perpetual futures 셋업을 5-Layer 프레임워크로 자동 평가하는 C
 
 ---
 
+## Installation
+
+```bash
+git clone https://github.com/bokwonboy3/trade-validator.git
+cd trade-validator
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+요구사항: **Python 3.10+**, 인터넷 연결 (Binance public API). API 키는 불필요.
+
+---
+
+## Usage
+
+### 기본 호출
+
+```bash
+python validate.py \
+  --symbol BTCUSDT \
+  --entry 80841 \
+  --sl 80500 \
+  --tp 81700 \
+  --direction long
+```
+
+| 인자 | 의미 |
+|---|---|
+| `--symbol` | 거래 심볼 (예: `BTCUSDT`, `ETHUSDT`) |
+| `--entry` | 진입가 (지정가 또는 현재가 모두 가능 — 5-Layer Layer 3가 자동 분기) |
+| `--sl` | Stop Loss 가격 |
+| `--tp` | Take Profit 가격 |
+| `--direction` | `long` 또는 `short` (대소문자 무관) |
+
+### 출력 예시 (4/5 통과 케이스)
+
+```
+=== Setup Validation ===
+Symbol: BTCUSDT
+Direction: LONG
+Entry: 80,937.00 / SL: 80,637.00 / TP: 81,837.00
+
+📊 5-Layer Evaluation:
+✅ Layer 1: 4H 강세 정렬 (MA25 80,633.80 > MA99 78,724.24)
+✅ Layer 2: 핵심 레벨 근처 (swing_high 81,080.00, 거리 0.18%)
+❌ Layer 3: 거부 캔들 + 거래량 미충족
+✅ Layer 4: SL이 swing low (80,725.09) 근처 (0.11%)
+✅ Layer 5: R:R 3.00 (≥ 3.0)
+
+🎯 Score: 4/5
+🟢 Recommendation: ENTER
+
+ℹ Advisory (진행중 15m, 점수 무영향):
+  진행중 15m: 거부 패턴 미형성
+```
+
+### Exit codes
+
+| Code | 의미 |
+|---|---|
+| 0 | 정상 종료 (셋업 통과 여부와 무관) |
+| 2 | 입력 검증 실패 (예: LONG에서 SL이 Entry보다 큼) |
+| 3 | Binance API 호출 실패 (네트워크/4xx/5xx) |
+
+---
+
+## 출력 해석
+
+### Layer별 아이콘
+
+| 아이콘 | 의미 | 점수 |
+|---|---|---|
+| ✅ pass | 조건 충족 | 1점 |
+| ❌ fail | 조건 미충족 | 0점 |
+| ⏸ pending | 평가 불가 (Layer 3 한정 — entry 근처를 50h 내 미방문) | 0점 |
+
+### Score → Recommendation
+
+- **5/5**: 🟢 ENTER (강한 셋업)
+- **4/5**: 🟢 ENTER (진입 가능 셋업의 최소 기준)
+- **≤ 3/5**: 🚫 PASS (이 셋업은 무시할 것)
+
+### Pending 케이스
+
+`⏸ Layer 3: PENDING` 표시는 entry 가격 근처를 최근 50시간 동안 한 번도 방문하지 않았다는 뜻입니다 (fresh level). 이 경우:
+- 점수에는 0점으로 반영됨 (즉 다른 4개가 모두 통과해야 4/5 도달)
+- entry까지 가격이 도달하면 도구를 다시 실행하세요. 그때 Layer 3가 실제 거부 캔들을 평가할 수 있습니다.
+
+### Advisory
+
+`ℹ Advisory (진행중 15m)`는 현재 형성중인 15분봉의 상태를 알려주는 정보 라인입니다. **점수에는 영향 없음**. 진행중 캔들의 모양은 마감 직전 뒤집힐 수 있으므로 score 계산에는 마감된 캔들만 사용합니다 (재현성 + 체리피킹 방지).
+
+---
+
 ## 동기
 
 BTC 선물 트레이딩에서 진입 결정을 더 일관되게 만들기 위함. 좋은 셋업과 나쁜 셋업을 객관적으로 평가하지 못해서 발생하는 실수(약한 셋업에 진입, R:R 부족, 핵심 레벨이 아닌 곳에서 진입 등)를 방지.
@@ -28,32 +123,38 @@ BTC 선물 트레이딩에서 진입 결정을 더 일관되게 만들기 위함
 
 1시간봉에서 swing high/low 자동 식별:
 
-- 최근 50개 1H 캔들 분석
-- swing high: 좌우 N개 캔들보다 높은 고점 (N=3 default)
+- 최근 100개 1H 캔들 분석
+- swing high: 좌우 N개 캔들보다 높은 고점 (**N=5**, BTC 변동성에서 노이즈 필터)
 - swing low: 좌우 N개 캔들보다 낮은 저점
 - 핵심 MA들도 레벨로 취급: 1H MA(25), MA(99)
 - **통과 조건**: 진입가가 어떤 핵심 레벨의 ±0.3% 이내
 
-### Layer 3: 진입 트리거 (15분봉 거부 캔들)
+### Layer 3: 진입 트리거 (Hybrid Historical)
 
-최근 3개 15m 캔들 분석:
+Real-time과 plan 모드를 단일 알고리즘으로 처리:
 
-**캔들 패턴 정의:**
+1. 최근 50개 1H 캔들 중 [low, high] 범위가 entry ±0.3% 와 겹치는 가장 최근 캔들 탐색
+2. 발견 시 → 그 1시간 구간의 15m 캔들 4개에서 거부 패턴 + 거래량 평가
+3. 미발견 시 → ⏸ pending (점수 0)
+
+**캔들 패턴:**
 - 망치형 (Hammer): `lower_wick > 2 × body` AND `upper_wick < body`
 - 슈팅스타 (Shooting Star): `upper_wick > 2 × body` AND `lower_wick < body`
 
 **거래량 기준:**
-- 해당 캔들 거래량 > 직전 10개 캔들 평균 거래량 × 1.5
+- 해당 캔들 거래량 > 직전 10개 15m 캔들 평균 거래량 × 1.5
 
 **통과 조건:**
-- LONG: 망치형 + 거래량 만족
-- SHORT: 슈팅스타 + 거래량 만족
+- LONG: 망치형 + 거래량 만족 (4개 15m 중 어느 하나)
+- SHORT: 슈팅스타 + 거래량 만족 (4개 15m 중 어느 하나)
 
-### Layer 4: SL이 구조 기반?
+### Layer 4: SL이 구조 기반? (단방향)
 
-- LONG: SL이 최근 50개 1H 캔들의 swing low 아래 (±0.5% 이내)
-- SHORT: SL이 최근 50개 1H 캔들의 swing high 위 (±0.5% 이내)
+- **LONG**: SL이 swing low의 0~0.5% **아래** 구간에 위치 (`swing_low × 0.995 ≤ SL ≤ swing_low`)
+- **SHORT**: SL이 swing high의 0~0.5% **위** 구간에 위치 (`swing_high ≤ SL ≤ swing_high × 1.005`)
 - 그 외: 실패
+
+이유: SL은 항상 level *너머*에 있어야 보호 의미. swing low *위*에 SL을 두면 swing low가 안 깨져도 SL hit되어 보호 의미 상실.
 
 ### Layer 5: R:R ≥ 3.0
 
@@ -63,104 +164,6 @@ BTC 선물 트레이딩에서 진입 결정을 더 일관되게 만들기 위함
 - **SHORT**: `reward = Entry - TP`, `risk = SL - Entry`
 - `R:R = reward / risk`
 - ≥ 3.0이면 통과
-
----
-
-## 입력 / 출력
-
-### CLI 사용법
-
-```bash
-python validate.py --symbol BTCUSDT --entry 80841 --sl 80500 --tp 81700 --direction long
-```
-
-### 출력 예시
-
-```
-=== Setup Validation ===
-Symbol: BTCUSDT
-Direction: LONG
-Entry: 80,841 / SL: 80,500 / TP: 81,700
-
-📊 5-Layer Evaluation:
-✅ Layer 1: 4H 강세 정렬 (MA25 80,123 > MA99 79,456)
-❌ Layer 2: 핵심 레벨 아님 (가장 가까운 레벨: 80,377, 거리 0.57%)
-❌ Layer 3: 거부 캔들 없음
-✅ Layer 4: SL이 swing low (80,420) 근처
-❌ Layer 5: R:R 1.85 (3.0 미달)
-
-🎯 Score: 2/5
-🚫 Recommendation: PASS
-
-💡 Suggestions:
-- Layer 2: 80,377 또는 81,700 도달 후 평가
-- Layer 5: TP 동일 시 SL을 80,624로 이동하면 R:R 3.0
-```
-
----
-
-## 기술 스택
-
-- **언어**: Python 3.10+
-- **라이브러리**:
-  - `pandas`, `pandas-ta` (지표 계산)
-  - `requests` (Binance API)
-  - `argparse` (CLI 파싱)
-- **API 키**: 불필요 (Binance public endpoints)
-
----
-
-## 데이터 소스
-
-Binance Public API:
-
-- **Klines**: `GET https://api.binance.com/api/v3/klines`
-  - intervals: `4h`, `1h`, `15m`
-  - limit: `100` (4h, 1h), `50` (15m)
-  - 인증 불필요
-
-캐싱 안 함 — 매 실행마다 최신 데이터 fetch.
-
----
-
-## 프로젝트 구조 (제안)
-
-```
-trade-validator/
-├── validate.py            # 메인 CLI 엔트리
-├── data/
-│   └── binance.py         # Binance API 호출
-├── analysis/
-│   ├── indicators.py      # MA 계산
-│   ├── levels.py          # 핵심 레벨 식별 (swing high/low)
-│   ├── candles.py         # 캔들 패턴 인식
-│   └── layers.py          # 5개 레이어 각각 평가
-├── output/
-│   └── formatter.py       # 결과 포맷팅
-├── requirements.txt
-└── README.md
-```
-
----
-
-## 요구 사항
-
-1. **빠른 실행**: 전체 평가 < 5초
-2. **깨끗한 출력**: 이모지, 색상(옵션) 활용한 가독성 높은 포맷
-3. **구체적 피드백**: 각 레이어 실패 시 이유 + 개선 제안
-4. **항상 최신 데이터**: 캐싱 없이 매번 Binance에서 fetch
-5. **에러 핸들링**:
-   - Binance API 오류 (타임아웃, 5xx 등) 처리
-   - 잘못된 입력 (예: SL이 LONG에서 entry보다 높을 때) 검증
-   - 명확한 에러 메시지
-
----
-
-## 향후 확장 (이번 Phase 0에서는 만들지 말 것)
-
-- **Phase 1**: 5분마다 자동 스캔 + Telegram bot 알람
-- **Phase 2**: SQLite 저널 (진입한 트레이드 결과 추적, 본인 통계)
-- **Phase 3**: Multi-symbol 지원, LLM 통합 (Ollama 또는 Claude API)
 
 ---
 
@@ -175,20 +178,168 @@ trade-validator/
 
 ---
 
-## 작업 요청 (Claude Code 향)
+## 한계
 
-지금 즉시 구현 시작하지 말고, 먼저 다음을 해줘:
+이 도구가 **하지 않는** 것:
 
-1. **요구사항 검토 후 명확하지 않은 부분 질문**
-2. **5-Layer 평가 로직 중 모호한 부분 확인**
-   - Layer 2: swing high/low 식별 알고리즘 (window size, 노이즈 처리)
-   - Layer 3: 거래량 기준 1.5배가 적절한지, 다른 방법은?
-   - Layer 4: SL 위치 판정의 ±0.5% 허용 범위 적절한지
-3. **프로젝트 구조 제안 검토** (위 구조 OK인지, 더 나은 방법 있는지)
-4. **단계별 구현 계획** (작은 단위로 쪼개서 — Definition of Done 명확히)
-5. **테스트 전략** (단위 테스트 어떻게 할지, mock 데이터 사용할지)
-6. **잠재적 위험 / 함정** (Binance API rate limit, 시간대 이슈, 휴장일 등)
+- **백테스트 / 통계**: 과거 셋업의 승률을 측정하지 않음. 실제 트레이드 결과 추적은 Phase 2 예정.
+- **실시간 모니터링**: 매 실행마다 fetch + 평가하는 일회성 도구. 자동 스캔은 Phase 1 예정.
+- **Multi-symbol 동시 평가**: 한 번에 하나의 symbol만. Phase 1에서 multi-symbol 지원.
+- **시장 미시구조**: Order book, funding rate, open interest 등 거시 지표 반영 안 함.
+- **거짓 양성 0% 보장**: 5-Layer는 통계적 휴리스틱이며 모든 셋업이 수익으로 연결되지 않음. 룰 #1 (주 3회 제한)을 반드시 지키세요.
+- **Telegram/이메일 알람**: Phase 1 예정.
 
-내가 plan 검토하고 OK 하면 그때 구현 시작.
+---
 
-위 6가지 정리해서 보여줘.
+## 기술 스택
+
+- **언어**: Python 3.10+
+- **라이브러리**:
+  - `pandas` (지표 계산, MA는 `rolling().mean()`)
+  - `requests` (Binance API)
+  - `pytest`, `pytest-mock` (테스트)
+- **API 키**: 불필요 (Binance public endpoints)
+
+---
+
+## 데이터 소스
+
+Binance Public API:
+
+- **Klines**: `GET https://api.binance.com/api/v3/klines`
+  - intervals: `4h`, `1h`, `15m`
+  - limit: `100` (4h, 1h), `200` (15m — Hybrid Historical 50시간 커버 위함)
+  - 인증 불필요
+- **마감된 캔들만 사용**: 진행중 캔들은 자동으로 drop (재현성 보장)
+
+캐싱 안 함 — 매 실행마다 최신 데이터 fetch.
+
+---
+
+## 프로젝트 구조
+
+```
+trade-validator/
+├── validate.py            # 메인 CLI 엔트리
+├── data/
+│   └── binance.py         # Binance API 호출 + 진행중 캔들 drop
+├── analysis/
+│   ├── indicators.py      # MA 계산
+│   ├── levels.py          # swing high/low 식별 (N=5)
+│   ├── candles.py         # 망치형/슈팅스타 + volume spike
+│   └── layers.py          # 5개 레이어 + 입력 검증
+├── output/
+│   └── formatter.py       # 결과 포맷팅 + advisory
+├── tests/
+│   ├── fixtures/          # Binance API 응답 JSON (오프라인 테스트용)
+│   └── test_*.py          # pytest 파일
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## 테스트
+
+```bash
+.venv/bin/python -m pytest tests/ -v
+```
+
+54+ 단위 테스트 (순수 함수 + fixture 기반 시나리오 + 입력 검증). 인터넷 없이도 실행 가능 — 모든 테스트는 fixture 사용.
+
+---
+
+## 향후 확장 (이번 Phase 0에서는 만들지 말 것)
+
+- **Phase 1**: 5분마다 자동 스캔 + Telegram bot 알람
+- **Phase 2**: SQLite 저널 (진입한 트레이드 결과 추적, 본인 통계)
+- **Phase 3**: Multi-symbol 지원, LLM 통합 (Ollama 또는 Claude API)
+
+---
+
+## 자동 스캔 (cron 등록)
+
+`scan.py`는 one-shot 스캐너입니다. 5분마다 실행은 cron이 담당합니다.
+
+### 1. config.toml 준비
+
+```bash
+cp config.example.toml config.toml
+# 필요한 심볼 / 알림 채널 편집
+```
+
+### 2. crontab 등록
+
+```bash
+crontab -e
+```
+
+다음 라인 추가 (5분마다 실행):
+
+```
+*/5 * * * * cd /Users/bokwon/trade-validator && .venv/bin/python scan.py --quiet --config config.toml --state .tv-state.json >> scan.log 2>&1
+```
+
+플래그 의미:
+- `--quiet` — 셋업이 dispatch될 때만 출력 (cron이 메일 안 보내게)
+- `--config` — 명시적 config 경로 (cron의 cwd가 다를 수 있음)
+- `--state` — alert idempotency state file 위치
+- 출력 리다이렉트 — cron 실행 로그를 `scan.log`로 누적
+
+### 3. Exit codes
+
+| Code | 의미 |
+|---|---|
+| 0 | 정상 완료 (셋업 통과 여부와 무관) |
+| 2 | Config 에러 |
+| 3 | 모든 심볼 실패 (Binance 장애 등 — 운영자 알림 필요) |
+
+### 4. 로그 확인
+
+```bash
+tail -f /Users/bokwon/trade-validator/scan.log
+```
+
+스캐너는 24시간 윈도우로 같은 (symbol, direction, swing low) 셋업을 한 번만 알림합니다. swing low가 ±0.1% 이상 다르면 새 셋업으로 인식.
+
+---
+
+## Telegram 알람 설정 (Phase 1 옵션)
+
+스캐너 알람을 텔레그램으로 받으려면:
+
+### 1. 봇 만들기
+
+1. 텔레그램에서 [@BotFather](https://t.me/BotFather) 검색 → 대화 시작
+2. `/newbot` 입력 → 안내에 따라 봇 이름과 username 설정
+3. 출력된 **Bot Token** 복사 (예: `1234567890:AAH...`)
+
+### 2. Chat ID 확인
+
+1. 만든 봇 검색해서 `/start` 메시지 보내기 (봇이 사용자에게 메시지를 보내려면 사용자가 먼저 시작해야 함)
+2. 브라우저에서 `https://api.telegram.org/bot<TOKEN>/getUpdates` 열기
+3. 응답에서 `"chat":{"id":<NUMBER>}` 부분의 숫자가 chat_id
+
+### 3. 환경 변수 + config.toml
+
+```bash
+export TELEGRAM_BOT_TOKEN="1234567890:AAH..."
+export TELEGRAM_CHAT_ID="123456789"
+```
+
+`config.toml`:
+```toml
+[notifications]
+channels = ["stdout", "telegram"]
+
+[notifications.telegram]
+enabled = true
+```
+
+토큰이나 chat_id가 없으면 텔레그램 채널은 자동으로 비활성화됩니다 (다른 채널은 정상 동작).
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

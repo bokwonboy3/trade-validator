@@ -70,3 +70,37 @@ def test_advisory_hammer_long():
     out = format_report(r)
     assert "Advisory" in out
     assert "망치형 형성 중" in out
+
+
+# --- --no-emoji ---
+_EMOJIS = ["✅", "❌", "⏸", "📊", "🎯", "🟢", "🚫", "ℹ", "💡"]
+
+
+def test_no_emoji_strips_all_emojis():
+    out = format_report(_full_pass_report(), no_emoji=True)
+    for e in _EMOJIS:
+        assert e not in out, f"unexpected emoji {e!r} in output"
+
+
+def test_no_emoji_uses_plain_labels():
+    out = format_report(_full_pass_report(), no_emoji=True)
+    assert "[PASS]" in out
+    assert "[5L]" in out
+    assert "[Score]" in out
+    assert "[ENTER]" in out
+
+
+def test_no_emoji_pending_label():
+    r = _full_pass_report()
+    r.layer_3 = _pending({"reason": "no_touch_in_history"})
+    out = format_report(r, no_emoji=True)
+    assert "[PEND]" in out
+    for e in _EMOJIS:
+        assert e not in out
+
+
+def test_no_emoji_fail_label():
+    r = _full_pass_report()
+    r.layer_5 = _bad({"rr": 2.0, "reward": 600.0, "risk": 300.0, "min_rr": 3.0})
+    out = format_report(r, no_emoji=True)
+    assert "[FAIL]" in out
