@@ -9,6 +9,8 @@ import pandas as pd
 import requests
 
 KLINES_URL: Final = "https://api.binance.com/api/v3/klines"
+FUTURES_FUNDING_URL: Final = "https://fapi.binance.com/fapi/v1/fundingRate"
+FUTURES_OI_HIST_URL: Final = "https://fapi.binance.com/futures/data/openInterestHist"
 DEFAULT_TIMEOUT: Final = 10  # seconds
 _RESP_TEXT_LIMIT: Final = 300
 
@@ -89,3 +91,33 @@ def fetch_klines(
                 df = df.iloc[:-1].reset_index(drop=True)
         return df
     raise BinanceError(f"Binance fetch failed after 1 retry — {last_err}")
+
+
+def fetch_funding_rate(
+    symbol: str, *, limit: int = 8, timeout: float = DEFAULT_TIMEOUT,
+) -> list[dict]:
+    """Recent funding rate history (perpetual futures). Returns list of dicts
+    with keys: fundingTime (ms), fundingRate (str, decimal)."""
+    params = {"symbol": symbol, "limit": limit}
+    try:
+        resp = requests.get(FUTURES_FUNDING_URL, params=params, timeout=timeout)
+    except requests.RequestException as e:
+        raise BinanceError(f"Binance funding fetch network error: {e}") from e
+    if resp.status_code >= 400:
+        raise BinanceError(_parse_binance_error(resp))
+    return resp.json()
+
+
+def fetch_open_interest_hist(
+    symbol: str, *, period: str = "1h", limit: int = 12, timeout: float = DEFAULT_TIMEOUT,
+) -> list[dict]:
+    """Open interest history. `period`: 5m | 15m | 30m | 1h | 2h | 4h | 6h | 12h | 1d.
+    Returns list of dicts with sumOpenInterest, sumOpenInterestValue, timestamp."""
+    params = {"symbol": symbol, "period": period, "limit": limit}
+    try:
+        resp = requests.get(FUTURES_OI_HIST_URL, params=params, timeout=timeout)
+    except requests.RequestException as e:
+        raise BinanceError(f"Binance OI fetch network error: {e}") from e
+    if resp.status_code >= 400:
+        raise BinanceError(_parse_binance_error(resp))
+    return resp.json()
