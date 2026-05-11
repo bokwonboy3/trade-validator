@@ -321,6 +321,52 @@ tail -f /Users/bokwon/trade-validator/scan.log
 
 ---
 
+## Agentic 분석 설정 (Phase 2 옵션)
+
+Tier 1 (5-Layer) 위에 LLM specialist agents를 얹어 알람 컨텍스트를 풍부하게 만듭니다.
+**Tier 1 verdict는 절대 upgrade 안 됨** (downgrade-only 룰 — framework discipline 보존).
+
+### Backend 선택
+
+```bash
+# .tv-env에 설정 (없으면 default 자동 선택)
+export AGENT_BACKEND="cli"   # plan quota (Claude Pro/Max), 권장
+# 또는
+export AGENT_BACKEND="api"   # API credits — ANTHROPIC_API_KEY 필요
+# 또는
+export AGENT_BACKEND="none"  # agentic tier 비활성
+```
+
+`AGENT_BACKEND` 미설정 시: `claude` CLI 있으면 CLI 사용, 아니면 API 시도, 둘 다 없으면 자동 비활성.
+
+### Model 선택 (옵션)
+
+```bash
+# 기본은 Sonnet 4.6 — Pro plan에서 사실상 무제한
+export AGENT_MODEL="sonnet"     # CLI alias (default)
+export AGENT_MODEL="opus"       # 더 깊은 분석 (Pro plan 제한 있음)
+export AGENT_MODEL="haiku"      # 빠르고 quota 절약
+# API 백엔드는 full name 필요: claude-sonnet-4-6, claude-opus-4-7 등
+```
+
+### 출력 예시
+
+```
+🎯 Score: 4/5
+🟡 Recommendation: WATCH
+
+🤖 Agent Verdict: WATCH  (confidence 58%)
+   → specialists 분석 결과 Tier 1 유지
+```
+
+Downgrade 시:
+```
+🤖 Agent Verdict: WATCH (Tier 1: ENTER → WATCH)  (confidence 65%)
+   → microstructure: weak rejection 감지
+```
+
+---
+
 ## Telegram 알람 설정 (Phase 1 옵션)
 
 스캐너 알람을 텔레그램으로 받으려면:

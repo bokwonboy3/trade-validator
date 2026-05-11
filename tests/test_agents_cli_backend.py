@@ -171,6 +171,34 @@ def test_backend_default_returns_none_when_both_missing(monkeypatch):
     assert get_default_client() is None
 
 
+# --- AGENT_MODEL override ---
+def test_agent_model_override_cli(monkeypatch):
+    monkeypatch.setenv(AGENT_BACKEND_ENV, "cli")
+    monkeypatch.setenv("AGENT_MODEL", "opus")
+    monkeypatch.setattr("agents.backend.cli_available", lambda: True)
+    c = get_default_client()
+    assert isinstance(c, ClaudeCliClient)
+    assert c.model == "opus"
+
+
+def test_agent_model_override_api(monkeypatch):
+    monkeypatch.setenv(AGENT_BACKEND_ENV, "api")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+    monkeypatch.setenv("AGENT_MODEL", "claude-opus-4-7")
+    c = get_default_client()
+    assert isinstance(c, AgentClient)
+    assert c.model == "claude-opus-4-7"
+
+
+def test_agent_model_default_when_not_set(monkeypatch):
+    """No AGENT_MODEL → client uses its own default (Sonnet)."""
+    monkeypatch.setenv(AGENT_BACKEND_ENV, "cli")
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+    monkeypatch.setattr("agents.backend.cli_available", lambda: True)
+    c = get_default_client()
+    assert c.model == "sonnet"  # ClaudeCliClient DEFAULT_MODEL_ALIAS
+
+
 # --- Live CLI test (skipped unless --run-live) ---
 @pytest.mark.live
 def test_live_cli_returns_json():

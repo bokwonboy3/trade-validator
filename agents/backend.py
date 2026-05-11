@@ -19,28 +19,43 @@ from agents.cli_client import ClaudeCliClient, cli_available
 from agents.client import AgentClient, AgentClientError
 
 AGENT_BACKEND_ENV: Final = "AGENT_BACKEND"
+AGENT_MODEL_ENV: Final = "AGENT_MODEL"
+
+
+def _model_kwarg() -> dict[str, str]:
+    """Pass `model=` only when AGENT_MODEL is explicitly set, otherwise use the
+    client's own default. Same env var works for both CLI and API backends:
+    CLI accepts aliases (`sonnet`, `opus`, `haiku`) and full names; API expects
+    full names (`claude-sonnet-4-6`, `claude-opus-4-7`, etc.)."""
+    m = os.environ.get(AGENT_MODEL_ENV, "").strip()
+    return {"model": m} if m else {}
 
 
 def get_default_client() -> Any | None:
-    """Return a client (CLI or API) per selection rules above, or None."""
+    """Return a client (CLI or API) per selection rules above, or None.
+
+    Model is taken from AGENT_MODEL env var if set; otherwise each client's
+    own default (Sonnet 4.6).
+    """
     backend = os.environ.get(AGENT_BACKEND_ENV, "").strip().lower()
+    model_kw = _model_kwarg()
 
     if backend == "none":
         return None
 
     if backend == "cli":
-        return ClaudeCliClient() if cli_available() else None
+        return ClaudeCliClient(**model_kw) if cli_available() else None
 
     if backend == "api":
         try:
-            return AgentClient()
+            return AgentClient(**model_kw)
         except AgentClientError:
             return None
 
     # default: try CLI first (user's plan), then API
     if cli_available():
-        return ClaudeCliClient()
+        return ClaudeCliClient(**model_kw)
     try:
-        return AgentClient()
+        return AgentClient(**model_kw)
     except AgentClientError:
         return None
