@@ -37,6 +37,7 @@ from data.journal_db import (
     record_skip,
     record_trade,
 )
+from monitor import compute_open_trade_status
 
 # --- Config ---
 TG_BASE: Final = "https://api.telegram.org"
@@ -181,6 +182,83 @@ def handle_skip_start(
     )
 
 
+def handle_close_now(
+    *, token: str, chat_id: int, trade_id: int, db_path: Path,
+) -> None:
+    """Close trade immediately at current Binance price.
+
+    Used by the 추세 반전 alert's 🔴 즉시 종료 button. The recorded exit price
+    is the latest 1m close — user can /correct later with the actual fill.
+    """
+    from data.binance import BinanceError, fetch_klines  # local: keep top deps small
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT t.*, a.symbol FROM trades t JOIN alerts a ON t.alert_id = a.id "
+            "WHERE t.id = ? AND t.status = 'open'",
+            (trade_id,),
+        ).fetchone()
+        if row is None:
+            send_message(token, chat_id, f"❌ Trade #{trade_id} 없거나 이미 종료됨.")
+            return
+        symbol = row["symbol"]
+        try:
+            df = fetch_klines(symbol, "1m", 1, drop_unclosed=False)
+            current = float(df.iloc[-1]["close"])
+        except (BinanceError, IndexError, KeyError) as e:
+            send_message(token, chat_id, f"❌ 가격 조회 실패: {e}")
+            return
+        try:
+            closed = close_trade(
+                conn, trade_id=trade_id, exit_price=current,
+                close_reason="reversal_close",
+            )
+        except ValueError as e:
+            send_message(token, chat_id, f"❌ {e}")
+            return
+    pnl_pct = closed["pnl_pct"]
+    sign = "🟢" if pnl_pct > 0 else "🔴" if pnl_pct < 0 else "⚪"
+    usd = f" (${closed['pnl_usd']:+.2f})" if closed.get("pnl_usd") is not None else ""
+    send_message(
+        token, chat_id,
+        f"✅ Trade #{trade_id} 즉시 종료 (추세 반전)\n"
+        f"   exit={current:.2f}\n"
+        f"   {sign} PnL: {pnl_pct:+.2f}%{usd}\n"
+        f"   (실제 fill 가격이 다르면 /correct {trade_id} <price>)"
+    )
+
+
+def handle_observe(*, token: str, chat_id: int, trade_id: int) -> None:
+    """Acknowledge — keep observing. Monitor's state file already suppresses
+    duplicate reversal alerts within 24h; this button is just user-facing
+    acknowledgment so they know the system heard them."""
+    send_message(
+        token, chat_id,
+        f"👀 Trade #{trade_id} 관찰 유지. "
+        f"추세가 또 flip하거나 24h 경과하면 재알림.",
+    )
+
+
+def _format_status_text(statuses: list) -> str:
+    """Render compute_open_trade_status output for /status reply."""
+    if not statuses:
+        return "열린 trade 없음."
+    lines = ["=== 열린 trade ==="]
+    for s in statuses:
+        sign = "🟢" if s.unrealized_pnl_pct > 0 else "🔴" if s.unrealized_pnl_pct < 0 else "⚪"
+        usd = (
+            f" (${s.unrealized_pnl_usd:+.2f})"
+            if s.unrealized_pnl_usd is not None else ""
+        )
+        lines.append(
+            f"#{s.trade_id} {s.symbol} {s.direction.upper()}\n"
+            f"   entry={s.filled_entry:.2f} → now={s.current_price:.2f}\n"
+            f"   {sign} {s.unrealized_pnl_pct:+.2f}%{usd}\n"
+            f"   SL까지 {s.distance_to_sl_pct:+.2f}% (@ {s.filled_sl:.2f})\n"
+            f"   TP까지 {s.distance_to_tp_pct:+.2f}% (@ {s.filled_tp:.2f})"
+        )
+    return "\n".join(lines)
+
+
 def handle_reply(
     *, token: str, chat_id: int, text: str,
     conv: ConvState, db_path: Path, default_size: float | None,
@@ -234,6 +312,17 @@ def handle_reply(
             for r in rows
         ]
         send_message(token, chat_id, "=== 열린 trade ===\n" + "\n".join(lines))
+        return
+
+    # /status — live unrealized PnL + distance to SL/TP per open trade
+    if text == "/status":
+        with connect(db_path) as conn:
+            try:
+                statuses = compute_open_trade_status(conn)
+            except Exception as e:
+                send_message(token, chat_id, f"❌ status 조회 실패: {e}")
+                return
+        send_message(token, chat_id, _format_status_text(statuses))
         return
 
     # Active conversation flow?
@@ -319,21 +408,37 @@ def process_update(
         except Exception as e:
             print(f"[listener] answer_callback failed: {e}", file=sys.stderr)
 
-        action, _, alert_id = data.partition(":")
+        action, _, payload = data.partition(":")
         conv = conv_states.setdefault(str(chat_id), ConvState())
         if action == "take_market":
             handle_take_market(
-                token=token, chat_id=chat_id, alert_id=alert_id,
+                token=token, chat_id=chat_id, alert_id=payload,
                 db_path=db_path, default_size=default_size,
             )
         elif action == "take_custom":
             handle_take_custom_start(
-                token=token, chat_id=chat_id, alert_id=alert_id, conv=conv,
+                token=token, chat_id=chat_id, alert_id=payload, conv=conv,
             )
         elif action == "skip":
             handle_skip_start(
-                token=token, chat_id=chat_id, alert_id=alert_id, conv=conv,
+                token=token, chat_id=chat_id, alert_id=payload, conv=conv,
             )
+        elif action == "close_now":
+            try:
+                tid = int(payload)
+            except ValueError:
+                send_message(token, chat_id, f"❌ trade id 파싱 실패: {payload!r}")
+                return
+            handle_close_now(
+                token=token, chat_id=chat_id, trade_id=tid, db_path=db_path,
+            )
+        elif action == "observe":
+            try:
+                tid = int(payload)
+            except ValueError:
+                send_message(token, chat_id, f"❌ trade id 파싱 실패: {payload!r}")
+                return
+            handle_observe(token=token, chat_id=chat_id, trade_id=tid)
         else:
             send_message(token, chat_id, f"알 수 없는 action: {action}")
         return

@@ -37,6 +37,15 @@ def _disable_agent_backend_by_default(monkeypatch):
         monkeypatch.setenv("AGENT_BACKEND", "none")
 
 
+@pytest.fixture(autouse=True)
+def _disable_monitor_by_default(monkeypatch):
+    """Force position monitor off for every test by default. The dedicated
+    monitor tests unset this themselves. Prevents accidental Binance API
+    calls + journal.db pollution from scan integration tests."""
+    if "MONITOR_DISABLED" not in os.environ:
+        monkeypatch.setenv("MONITOR_DISABLED", "1")
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
