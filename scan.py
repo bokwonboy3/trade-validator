@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from alert_state import DEFAULT_STATE_PATH, AlertState
+from analysis.forming import FormingResult, detect_forming_rejection
 from analysis.indicators import add_ma
 from analysis.layers import SetupEvaluation, evaluate_setup
 from analysis.scanner_logic import (
@@ -39,6 +42,9 @@ EXIT_OK = 0
 EXIT_CONFIG_ERROR = 2
 EXIT_ALL_SYMBOLS_FAILED = 3
 
+# Alert tiers
+Tier = Literal["confirmed", "forming"]
+
 
 @dataclass
 class ScanResult:
@@ -49,19 +55,41 @@ class ScanResult:
     skipped_reason: str | None = None
     setup: SynthesizedSetup | None = None
     evaluation: SetupEvaluation | None = None
+    forming: FormingResult | None = None  # set when in-progress 15m shows rejection forming
 
     @property
     def passes(self) -> bool:
         return self.evaluation is not None and self.evaluation.passes
 
+    @property
+    def has_forming_signal(self) -> bool:
+        """A FORMING signal triggers when the other 4 layers pass (Layers 1,2,4,5)
+        but Layer 3 hasn't confirmed yet (fail/pending), AND the in-progress 15m
+        window shows a rejection pattern forming."""
+        if self.evaluation is None or self.forming is None:
+            return False
+        ev = self.evaluation
+        # Layer 3 must NOT yet be confirmed pass — that's CONFIRMED, not FORMING
+        if ev.layer_3.status == "pass":
+            return False
+        # Other 4 layers must be passes (otherwise the setup isn't viable anyway)
+        return all(
+            l.status == "pass" for l in (ev.layer_1, ev.layer_2, ev.layer_4, ev.layer_5)
+        )
+
 
 def scan_symbol(symbol: str, *, default_rr: float = 3.0) -> ScanResult:
     """Fetch + analyze one symbol. Returns a ScanResult; does not raise on
-    BinanceError — packages it into the result so the loop continues."""
+    BinanceError — packages it into the result so the loop continues.
+
+    Fetches 4h/1h/15m for the 5-Layer evaluation, then 1m (with drop_unclosed=False)
+    to feed the FORMING detector for the in-progress 15m candle.
+    """
     try:
         df_4h = fetch_klines(symbol, "4h", limit=100)
         df_1h = fetch_klines(symbol, "1h", limit=100)
         df_15m = fetch_klines(symbol, "15m", limit=200)
+        df_1m = fetch_klines(symbol, "1m", limit=30, drop_unclosed=False)
     except BinanceError as e:
         return ScanResult(symbol=symbol, error=str(e))
 
@@ -81,7 +109,16 @@ def scan_symbol(symbol: str, *, default_rr: float = 3.0) -> ScanResult:
         df_4h, df_1h, df_15m,
         entry=setup.entry, sl=setup.sl, tp=setup.tp, direction=direction,
     )
-    return ScanResult(symbol=symbol, setup=setup, evaluation=evaluation)
+
+    # FORMING tier — only relevant when Layer 3 not yet confirmed
+    forming: FormingResult | None = None
+    if evaluation.layer_3.status != "pass":
+        forming = detect_forming_rejection(
+            df_1m, df_15m, entry=setup.entry, direction=direction,
+            now_ms=int(time.time() * 1000),
+        )
+
+    return ScanResult(symbol=symbol, setup=setup, evaluation=evaluation, forming=forming)
 
 
 def scan(cfg: ScannerConfig) -> list[ScanResult]:
@@ -96,21 +133,39 @@ def format_summary_line(r: ScanResult, threshold: int) -> str:
     if r.skipped_reason:
         return f"⏭ {r.symbol}: skipped — {r.skipped_reason}"
     assert r.setup is not None and r.evaluation is not None
-    icon = "🟢" if r.evaluation.total_score >= threshold else "·"
-    return (
+    if r.evaluation.total_score >= threshold:
+        icon = "🟢"  # CONFIRMED
+    elif r.has_forming_signal:
+        icon = "⚡"  # FORMING — Layer 3 forming, others pass
+    else:
+        icon = "·"
+    line = (
         f"{icon} {r.symbol} {r.setup.direction.upper()} "
         f"{r.evaluation.total_score}/5 "
         f"entry={r.setup.entry:,.2f} "
         f"SL={r.setup.sl:,.2f} TP={r.setup.tp:,.2f}"
     )
+    if r.has_forming_signal:
+        line += f"  [FORMING: {r.forming.minutes_elapsed}min/{r.forming.minutes_remaining}left]"
+    return line
 
 
-def build_report_for_alert(r: ScanResult) -> ValidationReport:
-    """Wrap a passing ScanResult into a ValidationReport for the formatter."""
+def build_report_for_alert(r: ScanResult, *, tier: Tier = "confirmed") -> ValidationReport:
+    """Wrap a ScanResult into a ValidationReport for the formatter.
+
+    `tier="forming"` injects a header noting the signal is intra-candle —
+    user should wait for 15m close to confirm.
+    """
     assert r.setup is not None and r.evaluation is not None
     ev = r.evaluation
+    symbol_label = r.symbol
+    if tier == "forming" and r.forming is not None:
+        symbol_label = (
+            f"{r.symbol}  ⚡FORMING ({r.forming.minutes_elapsed}min in, "
+            f"{r.forming.minutes_remaining}min until 15m close — re-verify on close)"
+        )
     return ValidationReport(
-        symbol=r.symbol,
+        symbol=symbol_label,
         direction=r.setup.direction,
         entry=r.setup.entry,
         sl=r.setup.sl,
@@ -165,42 +220,77 @@ def run_scan(
             if r.error:
                 print(f"❌ {r.symbol}: {r.error}", file=sys.stderr)
 
-    passing = [
+    confirmed = [
         r for r in results
         if r.passes and r.evaluation.total_score >= cfg.thresholds.min_score
     ]
-    if not passing:
+    forming = [
+        r for r in results
+        if r not in confirmed and r.has_forming_signal
+    ]
+
+    if not confirmed and not forming:
         _log("\nNo setups crossed threshold.", quiet=quiet)
         state.save()
         return EXIT_OK
 
-    new_alerts = []
-    suppressed = []
-    for r in passing:
-        assert r.setup is not None
-        if state.already_alerted(r.symbol, r.setup.direction, r.setup.sl_swing_price):
-            suppressed.append(r.symbol)
+    # Idempotency: tier prefix in the signature so a FORMING alert doesn't
+    # suppress a later CONFIRMED alert on the same setup (and vice versa).
+    def _record_key(symbol: str, tier: str) -> str:
+        return f"{tier}:{symbol}"
+
+    new_confirmed, suppressed_c = [], []
+    for r in confirmed:
+        sig = f"confirmed:{r.setup.direction}"
+        if state.already_alerted(_record_key(r.symbol, "confirmed"), sig, r.setup.sl_swing_price):
+            suppressed_c.append(r.symbol)
         else:
-            new_alerts.append(r)
+            new_confirmed.append(r)
 
-    if suppressed:
-        _log(f"\n{len(suppressed)} suppressed (already alerted within 24h): {suppressed}",
-             quiet=quiet)
+    new_forming, suppressed_f = [], []
+    for r in forming:
+        sig = f"forming:{r.setup.direction}"
+        if state.already_alerted(_record_key(r.symbol, "forming"), sig, r.setup.sl_swing_price):
+            suppressed_f.append(r.symbol)
+        else:
+            new_forming.append(r)
 
-    if not new_alerts:
+    if suppressed_c or suppressed_f:
+        _log(
+            f"\nsuppressed (already alerted within 24h) — "
+            f"confirmed:{suppressed_c} forming:{suppressed_f}",
+            quiet=quiet,
+        )
+
+    if not new_confirmed and not new_forming:
         _log("No new setups to dispatch.", quiet=quiet)
         state.save()
         return EXIT_OK
 
     channels = build_channels(cfg.notifications)
-    _log(f"\n{len(new_alerts)} new setup(s) — dispatching to {[c.name for c in channels]}",
-         quiet=quiet)
-    for r in new_alerts:
+    _log(
+        f"\ndispatching {len(new_confirmed)} CONFIRMED + {len(new_forming)} FORMING "
+        f"→ {[c.name for c in channels]}",
+        quiet=quiet,
+    )
+    for r in new_confirmed:
         assert r.setup is not None
-        report = build_report_for_alert(r)
-        text = format_report(report)
-        dispatch(channels, text)
-        state.record(r.symbol, r.setup.direction, r.setup.sl_swing_price)
+        report = build_report_for_alert(r, tier="confirmed")
+        dispatch(channels, format_report(report))
+        state.record(
+            _record_key(r.symbol, "confirmed"),
+            f"confirmed:{r.setup.direction}",
+            r.setup.sl_swing_price,
+        )
+    for r in new_forming:
+        assert r.setup is not None
+        report = build_report_for_alert(r, tier="forming")
+        dispatch(channels, format_report(report))
+        state.record(
+            _record_key(r.symbol, "forming"),
+            f"forming:{r.setup.direction}",
+            r.setup.sl_swing_price,
+        )
 
     state.save()
     return EXIT_OK

@@ -87,6 +87,15 @@ Entry: 80,937.00 / SL: 80,637.00 / TP: 81,837.00
 - **4/5**: 🟢 ENTER (진입 가능 셋업의 최소 기준)
 - **≤ 3/5**: 🚫 PASS (이 셋업은 무시할 것)
 
+### Alert Tier (Scanner 전용)
+
+스캐너는 **CONFIRMED**와 **FORMING** 두 종류 알람을 구분합니다:
+
+- 🟢 **CONFIRMED**: 마감된 캔들 기준 5-Layer 모두 통과 (전통적 4/5+ 셋업)
+- ⚡ **FORMING**: 진행중 15m 캔들에서 거부 패턴 + 거래량 spike가 *형성 중*. Layer 1,2,4,5는 confirmed, Layer 3만 아직 마감 안 됨.
+
+FORMING 알람은 별도 idempotency signature를 쓰므로 같은 셋업이 forming → confirmed로 한 번씩 두 번 알람됩니다. **FORMING은 monitor 신호이지 진입 신호가 아닙니다** — 15m 마감 후 confirmed로 올라오는지 확인 후 결정.
+
 ### Pending 케이스
 
 `⏸ Layer 3: PENDING` 표시는 entry 가격 근처를 최근 50시간 동안 한 번도 방문하지 않았다는 뜻입니다 (fresh level). 이 경우:

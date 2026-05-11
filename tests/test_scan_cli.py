@@ -90,9 +90,9 @@ def test_run_scan_returns_ok_when_all_setups_suppressed(mocker, tmp_path):
         return_value=[ScanResult(symbol="BTCUSDT", setup=setup, evaluation=ev)],
     )
 
-    # Pre-record alert so it gets suppressed
+    # Pre-record alert with the tier-prefixed signature used by scan.run_scan
     state = AlertState(path=tmp_path / "s.json")
-    state.record("BTCUSDT", "long", 79_900)
+    state.record("confirmed:BTCUSDT", "confirmed:long", 79_900)
 
     dispatch_spy = mocker.patch.object(scan, "dispatch")
     rc = run_scan(_cfg(), state=state)
