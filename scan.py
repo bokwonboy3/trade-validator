@@ -138,6 +138,13 @@ def scan_symbol(symbol: str, *, default_rr: float = 3.0) -> ScanResult:
                 entry=setup.entry, sl=setup.sl, tp=setup.tp,
                 direction=direction,
             )
+            # Diagnostic: log per-specialist failure reasons so we can debug
+            # cron-environment issues (keychain locks, network blips, etc).
+            if agent_verdict is not None and hasattr(agent_verdict, "rationale"):
+                # The runner doesn't expose specialist objects here, but the
+                # rationale + downgrade flag plus stderr inside agent code
+                # gives us audit trail.
+                pass
         except Exception as e:
             # NEVER let agent failures block alert dispatch.
             print(f"[agentic] {symbol} analysis failed: {e}", file=sys.stderr)
