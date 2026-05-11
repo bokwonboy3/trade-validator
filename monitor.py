@@ -601,6 +601,81 @@ def check_position_advisor(
     return events
 
 
+# --- On-demand: force the advisor on one trade right now (Telegram /advise) ---
+def force_advise(
+    trade_id: int,
+    *,
+    db_path: Path | None = None,
+    current_price_fetcher: Callable[[str], pd.DataFrame] | None = None,
+    df_4h_fetcher: Callable[[str], pd.DataFrame] | None = None,
+    df_1h_fetcher: Callable[[str], pd.DataFrame] | None = None,
+    df_15m_fetcher: Callable[[str], pd.DataFrame] | None = None,
+    advisor_evaluate: Callable | None = None,
+) -> str:
+    """Run the LLM advisor on a specific trade immediately, ignoring the
+    4h schedule. Does NOT touch monitor state (the next scheduled tick will
+    still happen on its own cadence). Returns a Telegram-friendly text.
+    """
+    if db_path is None:
+        db_path = Path(os.environ.get("JOURNAL_DB", str(DEFAULT_DB_PATH)))
+    if current_price_fetcher is None:
+        current_price_fetcher = _fetch_latest_close_1m
+    if df_4h_fetcher is None:
+        df_4h_fetcher = _fetch_4h_for_advisor
+    if df_1h_fetcher is None:
+        df_1h_fetcher = _fetch_1h_for_advisor
+    if df_15m_fetcher is None:
+        df_15m_fetcher = _fetch_15m_for_advisor
+    if advisor_evaluate is None:
+        from agents.position_advisor import evaluate as _ev
+        advisor_evaluate = _ev
+
+    with connect(db_path) as conn:
+        rows = [t for t in open_trades(conn) if t["id"] == trade_id]
+    if not rows:
+        return f"❌ Trade #{trade_id} 없음 (또는 이미 종료됨)"
+    trade = rows[0]
+
+    try:
+        df_price = current_price_fetcher(trade["symbol"])
+        if df_price.empty:
+            return f"❌ {trade['symbol']} 가격 fetch 결과 비어있음"
+        current = float(df_price.iloc[-1]["close"])
+        df_4h = df_4h_fetcher(trade["symbol"])
+        df_1h = df_1h_fetcher(trade["symbol"])
+        df_15m = df_15m_fetcher(trade["symbol"])
+    except BinanceError as e:
+        return f"❌ Binance fetch 실패: {e}"
+
+    pnl_pct = _current_pnl_pct(
+        trade["direction"], trade["filled_entry"], current,
+    )
+    result = advisor_evaluate(
+        symbol=trade["symbol"],
+        direction=trade["direction"],
+        entry=trade["filled_entry"],
+        current_price=current,
+        pnl_pct=pnl_pct,
+        df_4h=df_4h, df_1h=df_1h, df_15m=df_15m,
+    )
+    if result.failed:
+        return (
+            f"❌ Trade #{trade_id} advisor 실패: {result.failure_reason}\n"
+            f"   {trade['symbol']} {trade['direction'].upper()} entry={trade['filled_entry']:.2f} "
+            f"→ now={current:.2f} PnL={pnl_pct:+.2f}%"
+        )
+    action_icon = {
+        "HOLD": "👀", "TIGHTEN": "🔒", "PARTIAL": "✂️", "EXIT": "🔴",
+    }.get(result.action, "📊")
+    return (
+        f"{action_icon} Trade #{trade_id} advisor 평가 (force) → {result.action}\n"
+        f"   {trade['symbol']} {trade['direction'].upper()}\n"
+        f"   entry={trade['filled_entry']:.2f} → now={current:.2f}\n"
+        f"   PnL: {pnl_pct:+.2f}%  confidence: {result.confidence}/10\n"
+        f"   사유: {result.rationale}"
+    )
+
+
 # --- Orchestrator (called from scan.py cron) ---
 def run_position_monitor(
     db_path: Path | None = None,

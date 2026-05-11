@@ -308,6 +308,29 @@ def test_skip_reason_records_skip(captured, tmpdb, alert_in_db):
     assert row["reason"] == "저항 너무 가까움"
 
 
+def test_skip_reason_ignores_unknown_slash_command(captured, tmpdb, alert_in_db):
+    """An unknown /command sent while awaiting skip_reason must NOT be captured
+    as the reason. (Known commands like /advise / /check route normally and
+    take precedence, escaping the skip flow — that's the intended behavior.)
+    Real bug context: `/advice` got stored as a skip reason because it wasn't
+    a real command. Now /advice routes to /advise; this test guards the
+    fallback path for *unknown* typos like `/advise2` or `/foobar`."""
+    conv = tl.ConvState(awaiting="skip_reason", alert_id=alert_in_db, partial={})
+    tl.handle_reply(
+        token="T", chat_id=12345, text="/foobar",
+        conv=conv, db_path=tmpdb, default_size=None,
+    )
+    # Conv still awaiting (user must /cancel or type the reason)
+    assert conv.awaiting == "skip_reason"
+    with connect(tmpdb) as conn:
+        row = conn.execute(
+            "SELECT * FROM skipped WHERE alert_id = ?", (alert_in_db,)
+        ).fetchone()
+    assert row is None  # nothing recorded as reason
+    texts = _send_texts(captured)
+    assert any("skip 이유" in t for t in texts)
+
+
 # --- /close command ---
 def test_close_command_closes_trade(captured, tmpdb, alert_in_db):
     with connect(tmpdb) as conn:
@@ -562,3 +585,100 @@ def test_status_command_with_open_trade(captured, tmpdb, alert_in_db, mocker, mo
     assert "80400" in body or "80,400" in body
     # Long entered at 80000, now 80400 → +0.5%
     assert "+0.50%" in body
+
+
+# --- Phase 7: /check and /advise on-demand commands ---
+
+def test_check_command_missing_symbol(captured, tmpdb):
+    conv = tl.ConvState()
+    tl.handle_reply(
+        token="T", chat_id=12345, text="/check",
+        conv=conv, db_path=tmpdb, default_size=None,
+    )
+    assert any("사용법" in t for t in _send_texts(captured))
+
+
+def test_check_command_dispatches_to_quick_check(captured, tmpdb, mocker):
+    mocker.patch(
+        "telegram_listener.quick_check",
+        return_value="📊 BTCUSDT @ 80,000\n   추세: LONG | 🟢 점수 5/5",
+    )
+    conv = tl.ConvState()
+    tl.handle_reply(
+        token="T", chat_id=12345, text="/check BTCUSDT",
+        conv=conv, db_path=tmpdb, default_size=None,
+    )
+    texts = _send_texts(captured)
+    assert any("BTCUSDT" in t and "점수 5/5" in t for t in texts)
+
+
+def test_check_command_handles_exception(captured, tmpdb, mocker):
+    mocker.patch(
+        "telegram_listener.quick_check",
+        side_effect=RuntimeError("boom"),
+    )
+    conv = tl.ConvState()
+    tl.handle_reply(
+        token="T", chat_id=12345, text="/check BTCUSDT",
+        conv=conv, db_path=tmpdb, default_size=None,
+    )
+    texts = _send_texts(captured)
+    assert any("실패" in t and "boom" in t for t in texts)
+
+
+def test_advise_command_missing_id(captured, tmpdb):
+    conv = tl.ConvState()
+    tl.handle_reply(
+        token="T", chat_id=12345, text="/advise",
+        conv=conv, db_path=tmpdb, default_size=None,
+    )
+    assert any("사용법" in t for t in _send_texts(captured))
+
+
+def test_advise_command_bad_id(captured, tmpdb):
+    conv = tl.ConvState()
+    tl.handle_reply(
+        token="T", chat_id=12345, text="/advise abc",
+        conv=conv, db_path=tmpdb, default_size=None,
+    )
+    assert any("정수" in t for t in _send_texts(captured))
+
+
+def test_advise_command_dispatches_to_force_advise(captured, tmpdb, mocker):
+    mocker.patch(
+        "telegram_listener.force_advise",
+        return_value="👀 Trade #2 advisor 평가 → HOLD",
+    )
+    conv = tl.ConvState()
+    tl.handle_reply(
+        token="T", chat_id=12345, text="/advise 2",
+        conv=conv, db_path=tmpdb, default_size=None,
+    )
+    texts = _send_texts(captured)
+    # First message is "⏳ ... 호출 중", second is the result
+    assert any("HOLD" in t for t in texts)
+
+
+def test_advice_typo_routes_to_advise(captured, tmpdb, mocker):
+    """`/advice` (common misspelling) should route to the same handler."""
+    mocker.patch(
+        "telegram_listener.force_advise",
+        return_value="🔴 Trade #3 advisor 평가 → EXIT",
+    )
+    conv = tl.ConvState()
+    tl.handle_reply(
+        token="T", chat_id=12345, text="/advice 3",
+        conv=conv, db_path=tmpdb, default_size=None,
+    )
+    assert any("EXIT" in t for t in _send_texts(captured))
+
+
+def test_help_command_lists_commands(captured, tmpdb):
+    conv = tl.ConvState()
+    tl.handle_reply(
+        token="T", chat_id=12345, text="/help",
+        conv=conv, db_path=tmpdb, default_size=None,
+    )
+    body = "\n".join(_send_texts(captured))
+    for cmd in ("/status", "/check", "/advise", "/close"):
+        assert cmd in body

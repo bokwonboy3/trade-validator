@@ -37,7 +37,8 @@ from data.journal_db import (
     record_skip,
     record_trade,
 )
-from monitor import compute_open_trade_status
+from analysis.quick_check import quick_check
+from monitor import compute_open_trade_status, force_advise
 
 # --- Config ---
 TG_BASE: Final = "https://api.telegram.org"
@@ -335,6 +336,55 @@ def handle_reply(
         send_message(token, chat_id, _format_status_text(statuses))
         return
 
+    # /check SYMBOL — on-demand 5-Layer + S/R snapshot
+    if text.startswith("/check"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            send_message(token, chat_id, "사용법: /check <symbol>  예: /check BTCUSDT")
+            return
+        sym = parts[1].strip().upper()
+        try:
+            result = quick_check(sym)
+        except Exception as e:
+            send_message(token, chat_id, f"❌ /check {sym} 실패: {type(e).__name__}: {e}")
+            return
+        send_message(token, chat_id, result)
+        return
+
+    # /advise TRADE_ID — force advisor LLM call on an open trade (ignores 4h tick)
+    if text.startswith("/advise") or text.startswith("/advice"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            send_message(token, chat_id, "사용법: /advise <trade_id>  예: /advise 2")
+            return
+        try:
+            tid = int(parts[1].strip())
+        except ValueError:
+            send_message(token, chat_id, f"trade_id는 정수여야 합니다: {parts[1]!r}")
+            return
+        send_message(token, chat_id, f"⏳ Trade #{tid} advisor 호출 중…")
+        try:
+            result = force_advise(tid, db_path=db_path)
+        except Exception as e:
+            send_message(token, chat_id, f"❌ /advise {tid} 실패: {type(e).__name__}: {e}")
+            return
+        send_message(token, chat_id, result)
+        return
+
+    # /help — list available commands
+    if text == "/help":
+        send_message(
+            token, chat_id,
+            "=== 명령어 ===\n"
+            "/status — 열린 trade들의 실시간 PnL\n"
+            "/open — 열린 trade 목록\n"
+            "/close <id> <price> [reason] — 수동 종료\n"
+            "/check <symbol> — 5-Layer + S/R 즉시 분석 (예: /check BTCUSDT)\n"
+            "/advise <id> — 특정 trade에 advisor LLM 강제 호출\n"
+            "/cancel — 진행 중인 대화 취소",
+        )
+        return
+
     # Active conversation flow?
     if conv.awaiting is None:
         send_message(
@@ -344,8 +394,14 @@ def handle_reply(
         )
         return
 
-    # Skip reason
+    # Skip reason — but don't capture /commands (typo protection)
     if conv.awaiting == "skip_reason":
+        if text.startswith("/"):
+            send_message(
+                token, chat_id,
+                "skip 이유 입력 대기 중입니다. 이유 텍스트를 입력하거나 /cancel로 취소 후 명령을 사용해 주세요.",
+            )
+            return
         with connect(db_path) as conn:
             record_skip(conn, alert_id=conv.alert_id, reason=text)
         send_message(token, chat_id, f"✅ {conv.alert_id} 패스 기록됨\n   이유: {text}")

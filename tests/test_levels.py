@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.levels import find_swings, swing_highs, swing_lows
+from analysis.levels import compute_sr, find_swings, swing_highs, swing_lows
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -98,3 +98,82 @@ def test_n_zero_raises():
     df = _df([1, 2, 3], [0, 0, 0])
     with pytest.raises(ValueError):
         find_swings(df, n=0)
+
+
+# ---------- compute_sr ----------
+
+def _sr_df(highs: list[float], lows: list[float], closes: list[float] | None = None) -> pd.DataFrame:
+    closes = closes if closes is not None else [(h + l) / 2 for h, l in zip(highs, lows)]
+    return pd.DataFrame({
+        "high": highs, "low": lows, "close": closes,
+        "open": closes, "volume": [1] * len(highs),
+    })
+
+
+def test_compute_sr_partitions_by_reference():
+    # Swing high @ idx 3 = 20, swing low @ idx 8 = 1
+    highs = [10, 11, 12, 20, 12, 11, 10, 9, 8, 9, 10]
+    lows = [5, 5, 5, 5, 5, 4, 3, 2, 1, 2, 3]
+    df = _sr_df(highs, lows)
+    sr = compute_sr(df, reference_price=10.0, n_swing=2, include_ma=False)
+    # 20 is above 10 → resistance; 1 is below 10 → support
+    assert any(p == 20.0 for _, p in sr.resistance)
+    assert any(p == 1.0 for _, p in sr.support)
+
+
+def test_compute_sr_sorts_nearest_first():
+    # Two highs above ref (15 and 30) — 15 must come first.
+    highs = [10, 15, 10, 30, 10, 5, 10, 5, 10]
+    lows = [4] * 9
+    df = _sr_df(highs, lows)
+    sr = compute_sr(df, reference_price=8.0, n_swing=1, include_ma=False)
+    prices = [p for _, p in sr.resistance]
+    assert prices == sorted(prices)
+    assert prices[0] < prices[1]
+
+
+def test_compute_sr_caps_max_levels():
+    # Build a frame with multiple swings on each side
+    highs = [5, 20, 5, 25, 5, 30, 5, 35, 5, 40, 5]
+    lows = [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4]
+    df = _sr_df(highs, lows)
+    sr = compute_sr(df, reference_price=10.0, n_swing=1, include_ma=False, max_levels=2)
+    assert len(sr.resistance) <= 2
+
+
+def test_compute_sr_drops_levels_equal_to_reference():
+    highs = [10, 50, 10, 50, 10]
+    lows = [9, 9, 9, 9, 9]
+    df = _sr_df(highs, lows)
+    sr = compute_sr(df, reference_price=50.0, n_swing=1, include_ma=False)
+    assert not any(p == 50.0 for _, p in sr.resistance)
+    assert not any(p == 50.0 for _, p in sr.support)
+
+
+def test_compute_sr_includes_ma_when_enabled():
+    # Closes drift up so MA25 sits below the latest close; MA99 needs ≥99 rows
+    closes = [10.0 + i * 0.1 for i in range(120)]
+    highs = [c + 1 for c in closes]
+    lows = [c - 1 for c in closes]
+    df = _sr_df(highs, lows, closes=closes)
+    ref = closes[-1] + 5  # well above everything
+    sr = compute_sr(df, reference_price=ref, n_swing=5, include_ma=True)
+    labels = {lbl for lbl, _ in sr.resistance + sr.support}
+    assert "ma25" in labels
+    assert "ma99" in labels
+
+
+def test_compute_sr_nearest_helpers():
+    highs = [5, 20, 5, 30, 5]
+    lows = [4, 4, 4, 4, 4]
+    df = _sr_df(highs, lows)
+    sr = compute_sr(df, reference_price=10.0, n_swing=1, include_ma=False)
+    near_r = sr.nearest_resistance()
+    assert near_r is not None and near_r[1] == 20.0
+    assert sr.nearest_support() is None  # no swing_low below 10
+
+
+def test_compute_sr_invalid_max_levels():
+    df = _sr_df([1, 2, 3], [0, 0, 0])
+    with pytest.raises(ValueError):
+        compute_sr(df, reference_price=1.0, max_levels=0)
