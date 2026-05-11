@@ -39,10 +39,18 @@ class ThresholdsConfig:
 
 
 @dataclass(frozen=True)
+class JournalConfig:
+    """Trade journal defaults (Phase 4)."""
+
+    default_position_size_usd: float | None = None  # None = require explicit each time
+
+
+@dataclass(frozen=True)
 class ScannerConfig:
     symbols: tuple[str, ...]
     thresholds: ThresholdsConfig
     notifications: NotificationsConfig
+    journal: JournalConfig = JournalConfig()
 
 
 def load_config(path: Path | str | None = None) -> ScannerConfig:
@@ -120,6 +128,17 @@ def _validate(raw: dict) -> ScannerConfig:
         raise ConfigError("[notifications.telegram].enabled: bool")
     tg_cfg = TelegramChannelConfig(enabled=tg_enabled)
 
+    # Journal section is optional
+    journal_raw = raw.get("journal", {})
+    if not isinstance(journal_raw, dict):
+        raise ConfigError("[journal]: must be a table if present")
+    pos_size = journal_raw.get("default_position_size_usd")
+    if pos_size is not None and (not isinstance(pos_size, (int, float)) or pos_size <= 0):
+        raise ConfigError("[journal].default_position_size_usd: positive number or omit")
+    journal_cfg = JournalConfig(
+        default_position_size_usd=float(pos_size) if pos_size is not None else None,
+    )
+
     return ScannerConfig(
         symbols=tuple(symbols),
         thresholds=thresholds,
@@ -128,4 +147,5 @@ def _validate(raw: dict) -> ScannerConfig:
             file=file_cfg,
             telegram=tg_cfg,
         ),
+        journal=journal_cfg,
     )

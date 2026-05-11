@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd template for the Telegram listener daemon.
+
+  Setup (one-time):
+    1. Edit the paths below — replace /Users/USERNAME/trade-validator with your
+       actual checkout path. The .venv/bin/python path must be absolute.
+    2. Edit the TELEGRAM_BOT_TOKEN env var below.
+    3. (Optional) Set JOURNAL_DEFAULT_SIZE if you want a default position size.
+    4. Copy this file to ~/Library/LaunchAgents/com.user.trade-validator-listener.plist
+    5. Load it:
+         launchctl load ~/Library/LaunchAgents/com.user.trade-validator-listener.plist
+    6. Verify:
+         launchctl list | grep trade-validator-listener
+         tail -f /Users/USERNAME/trade-validator/listener.log
+
+  To stop:
+    launchctl unload ~/Library/LaunchAgents/com.user.trade-validator-listener.plist
+
+  KeepAlive=true means launchd will restart the daemon if it crashes. RunAtLoad
+  starts it on machine boot (only when the user is logged in, since LaunchAgent).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.trade-validator-listener</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/USERNAME/trade-validator/.venv/bin/python</string>
+        <string>/Users/USERNAME/trade-validator/telegram_listener.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/USERNAME/trade-validator</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TELEGRAM_BOT_TOKEN</key>
+        <string>REPLACE_WITH_YOUR_BOT_TOKEN</string>
+        <key>JOURNAL_DB</key>
+        <string>/Users/USERNAME/trade-validator/journal.db</string>
+        <!-- Uncomment to set a default position size in USD:
+        <key>JOURNAL_DEFAULT_SIZE</key>
+        <string>100</string>
+        -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/trade-validator/listener.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/trade-validator/listener.log</string>
+
+    <!-- Throttle restarts: if the daemon crashes immediately, wait this many
+         seconds before trying again. Prevents tight crash loops. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

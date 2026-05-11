@@ -12,3 +12,4 @@ alerts.jsonl
 market_memory.jsonl
 journal.db
 journal.db-journal
+listener.log
