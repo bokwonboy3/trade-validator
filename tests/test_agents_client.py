@@ -226,6 +226,7 @@ def test_run_agentic_returns_none_when_no_backend(monkeypatch):
         "close": 100.0, "volume": 5.0,
     } for i in range(20)])
     result = run_agentic_analysis(
-        ev, df_15m=df, df_1m=df, entry=100.0, direction="long",
+        ev, df_15m=df, df_1m=df, df_4h=df, df_1h=df,
+        symbol="BTCUSDT", entry=100.0, sl=99.0, tp=103.0, direction="long",
     )
     assert result is None

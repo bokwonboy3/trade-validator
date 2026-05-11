@@ -133,7 +133,10 @@ def scan_symbol(symbol: str, *, default_rr: float = 3.0) -> ScanResult:
             agent_verdict = run_agentic_analysis(
                 evaluation,
                 df_15m=df_15m, df_1m=df_1m,
-                entry=setup.entry, direction=direction,
+                df_4h=df_4h, df_1h=df_1h,
+                symbol=symbol,
+                entry=setup.entry, sl=setup.sl, tp=setup.tp,
+                direction=direction,
             )
         except Exception as e:
             # NEVER let agent failures block alert dispatch.

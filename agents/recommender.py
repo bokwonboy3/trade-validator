@@ -66,22 +66,47 @@ def recommend(
             proposed = "WATCH"
             rationale_parts.append("false-positive 위험 높음 → WATCH")
 
-    # Macro contradiction
+    # Risk specialist: tp_realism unlikely → downgrade
+    risk_spec = _find(specialists, "risk")
+    if risk_spec and not risk_spec.failed:
+        tpr = risk_spec.findings.get("tp_realism")
+        slq = risk_spec.findings.get("sl_quality")
+        if tpr == "unlikely" and tier1_verdict in ("ENTER", "PLAN_OK"):
+            proposed = _downgrade_one(proposed)
+            rationale_parts.append("risk: TP unlikely → 보수화")
+        if slq == "tight" and tier1_verdict == "ENTER":
+            proposed = _downgrade_one(proposed)
+            rationale_parts.append("risk: SL이 ATR 대비 tight → 보수화")
+
+    # Trend context: regime_change or weak strength
+    trend = _find(specialists, "trend_context")
+    if trend and not trend.failed:
+        tq = trend.findings.get("trend_quality")
+        ts = trend.findings.get("trend_strength")
+        if tq == "regime_change":
+            proposed = _downgrade_one(proposed)
+            rationale_parts.append("trend: regime change 감지")
+        elif isinstance(ts, (int, float)) and ts <= 3 and tier1_verdict == "ENTER":
+            proposed = _downgrade_one(proposed)
+            rationale_parts.append(f"trend strength {ts}/10 (약함)")
+
+    # Volume regime: distribution contra long, accumulation contra short
+    # (no direction in recommender — let the contradictions list capture mismatches)
+
+    # Macro contradiction (보수적 — strong opposing macro만)
     macro = _find(specialists, "macro")
     if macro and not macro.failed:
         bias = macro.findings.get("macro_bias", "neutral")
-        # If Tier 1 says ENTER but macro is opposite direction, soften
-        # (direction not known to recommender by name, so just use specialist's call)
-        if bias != "neutral" and meta.contradictions:
-            if tier1_verdict == "ENTER":
-                proposed = _downgrade_one(proposed)
-                rationale_parts.append(f"macro {bias} + 모순 감지 → 한 단계 보수화")
+        events = macro.findings.get("unusual_events") or []
+        if isinstance(events, list) and len(events) >= 2 and tier1_verdict == "ENTER":
+            proposed = _downgrade_one(proposed)
+            rationale_parts.append(f"macro: 비정상 이벤트 {len(events)}개")
 
     # Meta-judge: high hallucination risk → blanket downgrade
     if meta.hallucination_risk == "high":
         proposed = _downgrade_one(proposed)
         rationale_parts.append(
-            f"meta-judge: hallucination 위험 high ({len(meta.specialists_failed)}명 실패)"
+            f"meta-judge: 위험 high ({len(meta.specialists_failed)}명 실패)"
         )
 
     # Hard cap: never upgrade beyond Tier 1
