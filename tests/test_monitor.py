@@ -424,7 +424,217 @@ def test_run_position_monitor_combines_events(tmpdb, monkeypatch, mocker):
         "monitor._fetch_4h",
         return_value=_trend_4h_df(ma25_first=True),  # trend still aligned
     )
+    # Disable advisor LLM call for the orchestrator test
+    mocker.patch("monitor.check_position_advisor", return_value=[])
     state = MonitorState(path=tmpdb.with_suffix(".monitor.json"))
     events = run_position_monitor(db_path=tmpdb, state=state)
     kinds = [e.kind for e in events]
     assert "sl_hit" in kinds
+
+
+# --- Phase 6: PnL milestones ---
+from monitor import check_pnl_milestones, check_position_advisor
+
+
+def test_milestone_long_positive_fires(tmpdb):
+    with connect(tmpdb) as conn:
+        insert_alert_idempotent(conn, _alert("A1"))
+        record_trade(
+            conn, alert_id="A1",
+            filled_entry=80000, filled_sl=1.0, filled_tp=999999.0,
+            position_size=100,
+        )
+    # Current price 81600 → +2.0% for long entered at 80000
+    fake = lambda s: _klines_df(highs=[81600], lows=[81600], closes=[81600])
+    state = MonitorState(path=tmpdb.with_suffix(".monitor.json"))
+    calls = []
+    with connect(tmpdb) as conn:
+        events = check_pnl_milestones(
+            conn, state,
+            dispatcher_with_buttons=lambda m, kb: calls.append((m, kb)),
+            kline_fetcher=fake,
+        )
+    # +1% and +2% both crossed
+    thresholds = {e.detail["threshold"] for e in events}
+    assert 1.0 in thresholds
+    assert 2.0 in thresholds
+    assert 5.0 not in thresholds  # not yet
+    # State recorded
+    assert state.milestone_alerted(1, 1.0)
+    assert state.milestone_alerted(1, 2.0)
+    # Buttons present
+    assert len(calls) == 2  # one alert per milestone
+
+
+def test_milestone_short_negative_pnl_for_short_when_price_rises(tmpdb):
+    """SHORT trade losing money → negative PnL → -1% milestone fires."""
+    with connect(tmpdb) as conn:
+        insert_alert_idempotent(conn, _alert("A1", direction="short"))
+        record_trade(
+            conn, alert_id="A1",
+            filled_entry=80000, filled_sl=999999, filled_tp=1,
+        )
+    # Short entered at 80000. Price now 80800 → SHORT pnl = (80000-80800)/80000 = -1%
+    fake = lambda s: _klines_df(highs=[80800], lows=[80800], closes=[80800])
+    state = MonitorState(path=tmpdb.with_suffix(".monitor.json"))
+    with connect(tmpdb) as conn:
+        events = check_pnl_milestones(conn, state, kline_fetcher=fake)
+    thresholds = {e.detail["threshold"] for e in events}
+    assert -1.0 in thresholds
+
+
+def test_milestone_idempotent_second_run(tmpdb):
+    with connect(tmpdb) as conn:
+        insert_alert_idempotent(conn, _alert("A1"))
+        record_trade(
+            conn, alert_id="A1",
+            filled_entry=80000, filled_sl=1.0, filled_tp=999999.0,
+        )
+    fake = lambda s: _klines_df(highs=[80800], lows=[80800], closes=[80800])
+    state = MonitorState(path=tmpdb.with_suffix(".monitor.json"))
+    with connect(tmpdb) as conn:
+        first = check_pnl_milestones(conn, state, kline_fetcher=fake)
+        second = check_pnl_milestones(conn, state, kline_fetcher=fake)
+    assert len(first) == 1  # +1% only
+    assert len(second) == 0  # already fired, suppressed
+
+
+def test_milestone_no_alert_within_threshold(tmpdb):
+    """PnL +0.5% → no milestone (below +1% threshold)."""
+    with connect(tmpdb) as conn:
+        insert_alert_idempotent(conn, _alert("A1"))
+        record_trade(
+            conn, alert_id="A1",
+            filled_entry=80000, filled_sl=1.0, filled_tp=999999.0,
+        )
+    fake = lambda s: _klines_df(highs=[80400], lows=[80400], closes=[80400])
+    state = MonitorState(path=tmpdb.with_suffix(".monitor.json"))
+    with connect(tmpdb) as conn:
+        events = check_pnl_milestones(conn, state, kline_fetcher=fake)
+    assert events == []
+
+
+# --- Phase 6: Position advisor ---
+def _trade_4h_df():
+    return pd.DataFrame({
+        "openTime": list(range(10)),
+        "open": [80000] * 10, "high": [80100] * 10, "low": [79900] * 10,
+        "close": [80050] * 10, "volume": [1.0] * 10,
+        "closeTime": list(range(1, 11)),
+    })
+
+
+def test_advisor_runs_when_due_and_alerts(tmpdb):
+    with connect(tmpdb) as conn:
+        insert_alert_idempotent(conn, _alert("A1"))
+        record_trade(
+            conn, alert_id="A1",
+            filled_entry=80000, filled_sl=1.0, filled_tp=999999.0,
+        )
+    from agents.position_advisor import AdvisorOutput
+    state = MonitorState(path=tmpdb.with_suffix(".monitor.json"))
+    calls = []
+    advisor_stub = lambda **kwargs: AdvisorOutput(
+        action="HOLD", confidence=7, rationale="thesis intact",
+    )
+    fake_price = lambda s: _klines_df(highs=[80400], lows=[80400], closes=[80400])
+    fake_4h = lambda s: _trade_4h_df()
+    with connect(tmpdb) as conn:
+        events = check_position_advisor(
+            conn, state,
+            dispatcher_with_buttons=lambda m, kb: calls.append((m, kb)),
+            current_price_fetcher=fake_price,
+            df_4h_fetcher=fake_4h, df_1h_fetcher=fake_4h, df_15m_fetcher=fake_4h,
+            advisor_evaluate=advisor_stub,
+        )
+    assert len(events) == 1
+    assert events[0].kind == "advisor"
+    assert events[0].detail["action"] == "HOLD"
+    assert "1" in state.last_advisor_at  # ran
+    assert len(calls) == 1
+    msg, kb = calls[0]
+    assert "HOLD" in msg
+    assert "advisor 평가" in msg
+
+
+def test_advisor_skips_when_not_due(tmpdb):
+    """Second call within interval should skip."""
+    with connect(tmpdb) as conn:
+        insert_alert_idempotent(conn, _alert("A1"))
+        record_trade(
+            conn, alert_id="A1",
+            filled_entry=80000, filled_sl=1.0, filled_tp=999999.0,
+        )
+    from agents.position_advisor import AdvisorOutput
+    state = MonitorState(path=tmpdb.with_suffix(".monitor.json"))
+    state.record_advisor_run(1)  # just ran
+    advisor_stub = lambda **kwargs: AdvisorOutput(
+        action="HOLD", confidence=7, rationale="",
+    )
+    fake = lambda s: _klines_df(highs=[80400], lows=[80400], closes=[80400])
+    with connect(tmpdb) as conn:
+        events = check_position_advisor(
+            conn, state,
+            current_price_fetcher=fake,
+            df_4h_fetcher=fake, df_1h_fetcher=fake, df_15m_fetcher=fake,
+            advisor_evaluate=advisor_stub,
+        )
+    assert events == []  # suppressed by advisor_due
+
+
+def test_advisor_failed_no_alert_but_records_run(tmpdb):
+    """If advisor returns failed=True, no alert sent but run timestamp updated
+    so we don't immediately retry on next cron tick."""
+    with connect(tmpdb) as conn:
+        insert_alert_idempotent(conn, _alert("A1"))
+        record_trade(
+            conn, alert_id="A1",
+            filled_entry=80000, filled_sl=1.0, filled_tp=999999.0,
+        )
+    from agents.position_advisor import AdvisorOutput
+    state = MonitorState(path=tmpdb.with_suffix(".monitor.json"))
+    calls = []
+    advisor_stub = lambda **kwargs: AdvisorOutput(
+        action="HOLD", confidence=0, rationale="",
+        failed=True, failure_reason="LLM timeout",
+    )
+    fake = lambda s: _klines_df(highs=[80400], lows=[80400], closes=[80400])
+    with connect(tmpdb) as conn:
+        events = check_position_advisor(
+            conn, state,
+            dispatcher_with_buttons=lambda m, kb: calls.append(m),
+            current_price_fetcher=fake,
+            df_4h_fetcher=fake, df_1h_fetcher=fake, df_15m_fetcher=fake,
+            advisor_evaluate=advisor_stub,
+        )
+    assert events == []
+    assert calls == []
+    assert "1" in state.last_advisor_at  # run recorded despite failure
+
+
+# --- MonitorState extensions for Phase 6 ---
+def test_monitor_state_milestone_persistence(tmp_path):
+    p = tmp_path / "ms.json"
+    s = MonitorState(path=p)
+    s.record_milestone(1, 2.0)
+    s.record_milestone(1, -1.0)
+    s.save()
+    s2 = MonitorState.load(p)
+    assert s2.milestone_alerted(1, 2.0)
+    assert s2.milestone_alerted(1, -1.0)
+    assert not s2.milestone_alerted(1, 5.0)
+    assert not s2.milestone_alerted(2, 2.0)  # different trade
+
+
+def test_monitor_state_advisor_due_threshold(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    p = tmp_path / "ms.json"
+    s = MonitorState(path=p)
+    # Never run → due
+    assert s.advisor_due(1, interval_hours=4)
+    # Just ran → not due
+    s.record_advisor_run(1)
+    assert not s.advisor_due(1, interval_hours=4)
+    # 5h ago → due
+    s.last_advisor_at["1"] = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+    assert s.advisor_due(1, interval_hours=4)

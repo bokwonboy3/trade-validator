@@ -504,6 +504,24 @@ def test_observe_callback_just_acknowledges(captured, tmpdb):
     assert any("42" in t for t in texts)
 
 
+def test_hold_callback_acknowledges(captured, tmpdb):
+    """Phase 6: 'hold' button from milestone / advisor alerts."""
+    tl.process_update(
+        {
+            "update_id": 1,
+            "callback_query": {
+                "id": "cb",
+                "data": "hold:7",
+                "message": {"chat": {"id": 12345}},
+            },
+        },
+        token="T", db_path=tmpdb, conv_states={}, default_size=None,
+    )
+    texts = _send_texts(captured)
+    assert any("hold 확인" in t for t in texts)
+    assert any("7" in t for t in texts)
+
+
 # --- Phase 5: /status command ---
 def test_status_command_empty(captured, tmpdb, monkeypatch):
     monkeypatch.delenv("MONITOR_DISABLED", raising=False)
