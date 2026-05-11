@@ -242,10 +242,18 @@ trade-validator/
 ## 테스트
 
 ```bash
+# 기본 (오프라인 — 151 tests)
 .venv/bin/python -m pytest tests/ -v
+
+# Live (실제 Binance API 호출 — 6 tests, 약 3초)
+.venv/bin/python -m pytest tests/ -m live --run-live -v
 ```
 
-54+ 단위 테스트 (순수 함수 + fixture 기반 시나리오 + 입력 검증). 인터넷 없이도 실행 가능 — 모든 테스트는 fixture 사용.
+총 157 tests:
+- **151 offline** — 순수 함수, fixture 기반, Mock 기반, CLI, edge case, stress
+- **6 live** (default skipped) — 실제 Binance schema 회기, cron 환경 시뮬레이션
+
+CI는 offline만 실행. Live는 수동 실행 또는 production 검증용.
 
 ---
 
