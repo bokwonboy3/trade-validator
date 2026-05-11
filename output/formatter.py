@@ -20,6 +20,9 @@ class ValidationReport:
     layer_4: LayerResult
     layer_5: LayerResult
     advisory_15m: Candle | None = None  # in-progress 15m advisory, None if no live candle
+    # Agentic tier output. None when API key absent or analysis skipped.
+    # Type is `Any` to avoid circular dependency with agents.types.
+    agent_verdict: object | None = None
 
     @property
     def total_score(self) -> int:
@@ -214,6 +217,24 @@ def format_report(r: ValidationReport, *, no_emoji: bool = False) -> str:
         lines.append("")
         lines.append(f"{_glyph('tip', no_emoji=no_emoji)} Suggestions:")
         lines.extend(f"- {s}" for s in suggestions)
+
+    # Agent verdict (Tier 2~4 agentic analysis)
+    if r.agent_verdict is not None:
+        av = r.agent_verdict
+        # Use duck-typing to avoid agents import (keeps formatter standalone)
+        a_verdict = getattr(av, "verdict", None)
+        a_conf = getattr(av, "confidence", None)
+        a_rationale = getattr(av, "rationale", "")
+        a_downgraded = getattr(av, "downgraded_from_tier1", False)
+        a_tier1 = getattr(av, "tier1_verdict", None)
+        if a_verdict is not None:
+            lines.append("")
+            arrow = f" (Tier 1: {a_tier1} → {a_verdict})" if a_downgraded else ""
+            lines.append(
+                f"🤖 Agent Verdict: {a_verdict}{arrow}  (confidence {a_conf}%)"
+            )
+            if a_rationale:
+                lines.append(f"   → {a_rationale}")
 
     # Advisory: in-progress 15m candle
     if r.advisory_15m is not None:

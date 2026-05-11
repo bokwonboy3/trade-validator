@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from agents.runner import run_agentic_analysis
+from agents.types import AgentVerdict
 from alert_state import DEFAULT_STATE_PATH, AlertState
 from analysis.forming import FormingResult, detect_forming_rejection
 from analysis.indicators import add_ma
@@ -56,6 +58,7 @@ class ScanResult:
     setup: SynthesizedSetup | None = None
     evaluation: SetupEvaluation | None = None
     forming: FormingResult | None = None  # set when in-progress 15m shows rejection forming
+    agent_verdict: AgentVerdict | None = None  # agentic tier output (None if disabled)
 
     @property
     def passes(self) -> bool:
@@ -118,7 +121,25 @@ def scan_symbol(symbol: str, *, default_rr: float = 3.0) -> ScanResult:
             now_ms=int(time.time() * 1000),
         )
 
-    return ScanResult(symbol=symbol, setup=setup, evaluation=evaluation, forming=forming)
+    # Agentic analysis (Tier 2~4) — only run when Tier 1 reaches a meaningful
+    # score, to keep token cost bounded. Returns None if ANTHROPIC_API_KEY is
+    # not set (graceful degradation).
+    agent_verdict = None
+    if evaluation.total_score >= 3 or forming is not None:
+        try:
+            agent_verdict = run_agentic_analysis(
+                evaluation,
+                df_15m=df_15m, df_1m=df_1m,
+                entry=setup.entry, direction=direction,
+            )
+        except Exception as e:
+            # NEVER let agent failures block alert dispatch.
+            print(f"[agentic] {symbol} analysis failed: {e}", file=sys.stderr)
+
+    return ScanResult(
+        symbol=symbol, setup=setup, evaluation=evaluation,
+        forming=forming, agent_verdict=agent_verdict,
+    )
 
 
 def scan(cfg: ScannerConfig) -> list[ScanResult]:
@@ -176,6 +197,7 @@ def build_report_for_alert(r: ScanResult, *, tier: Tier = "confirmed") -> Valida
         layer_4=ev.layer_4,
         layer_5=ev.layer_5,
         advisory_15m=None,  # scanner mode skips advisory to keep alerts deterministic
+        agent_verdict=r.agent_verdict,
     )
 
 
