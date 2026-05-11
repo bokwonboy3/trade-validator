@@ -7,6 +7,7 @@ config.toml
 alerts.log
 .tv-state*.json
 .tv-monitor-state*.json
+.tv-agent-cache*.json
 scan.log
 .tv-env
 alerts.jsonl

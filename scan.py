@@ -22,7 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from agents.runner import run_agentic_analysis, run_agentic_analysis_with_specialists
+import pandas as pd
+
+from agents.runner import run_agentic_analysis_with_specialists
+from agents.specialist_cache import DEFAULT_CACHE_PATH, SpecialistCache
 from agents.types import AgentVerdict, SpecialistOutput
 from alert_state import DEFAULT_STATE_PATH, AlertState
 from analysis.forming import FormingResult, detect_forming_rejection
@@ -50,6 +53,17 @@ Tier = Literal["confirmed", "forming"]
 
 
 @dataclass
+class _AgentInputs:
+    """DataFrames a deferred agent call needs. Held on the ScanResult so
+    `_dispatch_new_setups` can run agents without re-fetching from Binance."""
+
+    df_4h: pd.DataFrame
+    df_1h: pd.DataFrame
+    df_15m: pd.DataFrame
+    df_1m: pd.DataFrame
+
+
+@dataclass
 class ScanResult:
     """Per-symbol scan outcome. Mutually exclusive: error / skipped / completed."""
 
@@ -61,6 +75,8 @@ class ScanResult:
     forming: FormingResult | None = None  # set when in-progress 15m shows rejection forming
     agent_verdict: AgentVerdict | None = None  # agentic tier output (None if disabled)
     agent_specialists: list[SpecialistOutput] | None = None  # per-specialist outputs
+    agent_cache_hit: bool = False  # True when verdict came from SpecialistCache
+    agent_inputs: _AgentInputs | None = None  # frames for deferred agent call
 
     @property
     def passes(self) -> bool:
@@ -123,34 +139,13 @@ def scan_symbol(symbol: str, *, default_rr: float = 3.0) -> ScanResult:
             now_ms=int(time.time() * 1000),
         )
 
-    # Agentic analysis (Tier 2~4) — only run when Tier 1 would actually alert
-    # (score >= dispatch threshold OR forming detected). Skips agents on
-    # 3/5 setups that won't dispatch anyway, keeping cron tick under budget.
-    agent_verdict = None
-    # NB: dispatch threshold lives in ScannerConfig (defaults to 4); accessing
-    # it would require a refactor. For now use 4 directly — matches default.
-    AGENT_TRIGGER_SCORE = 4
-    agent_specialists: list[SpecialistOutput] | None = None
-    if evaluation.total_score >= AGENT_TRIGGER_SCORE or forming is not None:
-        try:
-            result = run_agentic_analysis_with_specialists(
-                evaluation,
-                df_15m=df_15m, df_1m=df_1m,
-                df_4h=df_4h, df_1h=df_1h,
-                symbol=symbol,
-                entry=setup.entry, sl=setup.sl, tp=setup.tp,
-                direction=direction,
-            )
-            if result is not None:
-                agent_verdict, agent_specialists = result
-        except Exception as e:
-            # NEVER let agent failures block alert dispatch.
-            print(f"[agentic] {symbol} analysis failed: {e}", file=sys.stderr)
-
+    # Agent invocation is deferred to `_dispatch_new_setups` so we only
+    # spend on LLM calls for setups that pass the idempotency gate. Keep
+    # the frames here so the dispatch path doesn't need to re-fetch.
     return ScanResult(
         symbol=symbol, setup=setup, evaluation=evaluation,
-        forming=forming, agent_verdict=agent_verdict,
-        agent_specialists=agent_specialists,
+        forming=forming,
+        agent_inputs=_AgentInputs(df_4h=df_4h, df_1h=df_1h, df_15m=df_15m, df_1m=df_1m),
     )
 
 
@@ -256,6 +251,7 @@ def _record_jsonl(r: ScanResult, *, tier: str, alert_id: str) -> None:
         "agent_verdict": getattr(av, "verdict", None) if av else None,
         "agent_confidence": getattr(av, "confidence", None) if av else None,
         "agent_downgraded": getattr(av, "downgraded_from_tier1", False) if av else False,
+        "agent_cache_hit": r.agent_cache_hit,
         "specialist_failures": [
             s.name for s in (r.agent_specialists or []) if getattr(s, "failed", False)
         ],
@@ -270,6 +266,7 @@ def run_scan(
     cfg: ScannerConfig,
     *,
     state: AlertState | None = None,
+    agent_cache: SpecialistCache | None = None,
     quiet: bool = False,
 ) -> int:
     """Top-level scan + dispatch. Returns process exit code.
@@ -277,11 +274,17 @@ def run_scan(
     If `state` is provided, deduplicates alerts within ALERT_TTL_HOURS so the
     same setup isn't re-sent on every scan tick.
 
+    `agent_cache`, if provided, lets `_dispatch_new_setups` reuse specialist
+    outputs for setups whose (symbol, direction, sl_swing_price) already
+    appears within TTL. Missing → loaded from DEFAULT_CACHE_PATH.
+
     `quiet=True` suppresses per-symbol summary lines (cron-friendly: only
     dispatched alerts and errors reach stdout/stderr).
     """
     if state is None:
         state = AlertState.load()
+    if agent_cache is None:
+        agent_cache = SpecialistCache.load()
     results = scan(cfg)
 
     if not quiet:
@@ -315,9 +318,13 @@ def run_scan(
     if not confirmed and not forming:
         _log("\nNo setups crossed threshold.", quiet=quiet)
     else:
-        _dispatch_new_setups(state, confirmed, forming, channels, quiet=quiet)
+        _dispatch_new_setups(
+            state, confirmed, forming, channels,
+            agent_cache=agent_cache, quiet=quiet,
+        )
 
     state.save()
+    agent_cache.save()
 
     # Phase 5: monitor open trades regardless of new-setup outcome.
     # SL/TP touch → auto-close; 4H trend reversal → alert with inline buttons.
@@ -332,10 +339,18 @@ def _dispatch_new_setups(
     forming: list[ScanResult],
     channels: list,
     *,
+    agent_cache: SpecialistCache,
     quiet: bool,
 ) -> None:
-    """Idempotency check + dispatch. Tier prefix in the signature so a FORMING
-    alert doesn't suppress a later CONFIRMED alert on the same setup."""
+    """Idempotency check + agent invocation + dispatch.
+
+    Agent calls happen here (not in `scan_symbol`) so they fire only for
+    setups that survive `state.already_alerted` — avoiding ~5 LLM calls per
+    re-detected setup on every cron tick. `agent_cache` further reuses
+    specialist outputs within TTL on (symbol, direction, sl_swing_price).
+
+    Tier prefix in the signature so a FORMING alert doesn't suppress a later
+    CONFIRMED alert on the same setup."""
     def _record_key(symbol: str, tier: str) -> str:
         return f"{tier}:{symbol}"
 
@@ -373,6 +388,7 @@ def _dispatch_new_setups(
     )
     for r in new_confirmed:
         assert r.setup is not None
+        _attach_agent_verdict(r, agent_cache=agent_cache, quiet=quiet)
         alert_id = _generate_alert_id(r.symbol, "confirmed")
         report = build_report_for_alert(r, tier="confirmed", alert_id=alert_id)
         dispatch(channels, format_report(report), inline_keyboard=_alert_buttons(alert_id))
@@ -384,6 +400,7 @@ def _dispatch_new_setups(
         _record_jsonl(r, tier="confirmed", alert_id=alert_id)
     for r in new_forming:
         assert r.setup is not None
+        _attach_agent_verdict(r, agent_cache=agent_cache, quiet=quiet)
         alert_id = _generate_alert_id(r.symbol, "forming")
         report = build_report_for_alert(r, tier="forming", alert_id=alert_id)
         dispatch(channels, format_report(report), inline_keyboard=_alert_buttons(alert_id))
@@ -393,6 +410,57 @@ def _dispatch_new_setups(
             r.setup.sl_swing_price,
         )
         _record_jsonl(r, tier="forming", alert_id=alert_id)
+
+
+def _attach_agent_verdict(
+    r: ScanResult, *, agent_cache: SpecialistCache, quiet: bool,
+) -> None:
+    """Populate `r.agent_verdict` / `r.agent_specialists` / `r.agent_cache_hit`
+    by checking the cache first and falling back to a live LLM call.
+
+    Mutates `r` in place. Agent failures are logged to stderr but do not
+    raise — the alert still goes out without the agentic block.
+    """
+    assert r.setup is not None and r.evaluation is not None
+    l3 = r.evaluation.layer_3.status
+    cached = agent_cache.get(r.symbol, r.setup.direction, r.setup.sl_swing_price, l3)
+    if cached is not None:
+        r.agent_verdict, r.agent_specialists = cached
+        r.agent_cache_hit = True
+        _log(
+            f"[agentic] {r.symbol} cache hit ({r.setup.direction} "
+            f"@ swing {r.setup.sl_swing_price:.4f}, L3={l3})",
+            quiet=quiet,
+            file=sys.stderr,
+        )
+        return
+
+    if r.agent_inputs is None:
+        # scan_symbol always sets agent_inputs on a completed result; this
+        # only fires for hand-built ScanResults in tests.
+        return
+
+    try:
+        result = run_agentic_analysis_with_specialists(
+            r.evaluation,
+            df_15m=r.agent_inputs.df_15m, df_1m=r.agent_inputs.df_1m,
+            df_4h=r.agent_inputs.df_4h, df_1h=r.agent_inputs.df_1h,
+            symbol=r.symbol,
+            entry=r.setup.entry, sl=r.setup.sl, tp=r.setup.tp,
+            direction=r.setup.direction,
+        )
+    except Exception as e:
+        # NEVER let agent failures block alert dispatch.
+        print(f"[agentic] {r.symbol} analysis failed: {e}", file=sys.stderr)
+        return
+
+    if result is None:
+        return
+    r.agent_verdict, r.agent_specialists = result
+    agent_cache.put(
+        r.symbol, r.setup.direction, r.setup.sl_swing_price, l3,
+        r.agent_verdict, r.agent_specialists,
+    )
 
 
 def _run_position_monitor_step(channels: list, *, quiet: bool) -> None:
@@ -449,6 +517,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--state",
         default=str(DEFAULT_STATE_PATH),
         help=f"alert state JSON 경로 (기본: {DEFAULT_STATE_PATH})",
+    )
+    p.add_argument(
+        "--agent-cache",
+        default=str(DEFAULT_CACHE_PATH),
+        help=f"specialist 결과 캐시 JSON 경로 (기본: {DEFAULT_CACHE_PATH})",
     )
     p.add_argument(
         "--once",
@@ -510,6 +583,7 @@ def print_stats(hours: int = 24, jsonl_path: str = "alerts.jsonl") -> None:
         r.get("agent_verdict") for r in recent if r.get("agent_verdict")
     )
     downgrades = sum(1 for r in recent if r.get("agent_downgraded"))
+    cache_hits = sum(1 for r in recent if r.get("agent_cache_hit"))
     failed_specs: Counter = Counter()
     for r in recent:
         for s in r.get("specialist_failures") or []:
@@ -520,6 +594,7 @@ def print_stats(hours: int = 24, jsonl_path: str = "alerts.jsonl") -> None:
     if by_agent_verdict:
         print(f"Agent verdict 분포: {dict(by_agent_verdict)}")
         print(f"Agent downgrade: {downgrades}/{len(recent)} ({100*downgrades//max(1,len(recent))}%)")
+        print(f"Agent cache hit: {cache_hits}/{len(recent)} ({100*cache_hits//max(1,len(recent))}%)")
     if failed_specs:
         print(f"Specialist 실패 빈도: {dict(failed_specs)}")
     avg_conf = [r.get("agent_confidence") for r in recent if r.get("agent_confidence") is not None]
@@ -538,7 +613,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"❌ Config error: {e}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
     state = AlertState.load(Path(args.state))
-    return run_scan(cfg, state=state, quiet=args.quiet)
+    agent_cache = SpecialistCache.load(Path(args.agent_cache))
+    return run_scan(cfg, state=state, agent_cache=agent_cache, quiet=args.quiet)
 
 
 if __name__ == "__main__":
