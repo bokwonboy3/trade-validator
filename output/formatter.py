@@ -43,6 +43,7 @@ _EMOJI_GLYPHS = {
     "header": "📊",
     "score": "🎯",
     "enter": "🟢",
+    "watch": "🟡",
     "block": "🚫",
     "info": "ℹ",
     "tip": "💡",
@@ -54,6 +55,7 @@ _PLAIN_GLYPHS = {
     "header": "[5L]",
     "score": "[Score]",
     "enter": "[ENTER]",
+    "watch": "[WATCH]",
     "block": "[PASS]",
     "info": "[INFO]",
     "tip": "[TIP]",
@@ -70,6 +72,41 @@ def _icon(status: str, *, no_emoji: bool = False) -> str:
 
 def _fmt_money(v: float) -> str:
     return f"{v:,.2f}"
+
+
+def _recommendation(r: "ValidationReport") -> tuple[str, str, str]:
+    """Return (label, flag_glyph_key, advisory_note) based on score + which layer failed.
+
+    The 5-Layer framework's threshold is 4/5, but a 4/5 score isn't monolithic —
+    *which* layer failed changes what the user should do. Layer 3 (trigger) is
+    especially important: 4/5 with Layer 3 ❌ means "level reached but no
+    rejection signal" → MONITOR, not ENTER.
+    """
+    score = r.total_score
+    if score < 4:
+        return ("PASS", "block", "")
+    if score == 5:
+        return ("ENTER", "enter", "5개 layer 모두 정렬 — 강한 신호")
+
+    # score == 4: identify which layer failed/pending
+    l3 = r.layer_3.status
+    if l3 == "pass":
+        # Some other layer failed. Layer 3 (the trigger) IS confirmed.
+        return ("ENTER", "enter", "Layer 3 거부 신호 확정 — 진입 고려")
+    if l3 == "pending":
+        return (
+            "PLAN OK",
+            "watch",
+            "entry 근처 미방문 — 도달 시 도구 재실행으로 Layer 3 평가",
+        )
+    # Layer 3 fail (most common 4/5): level reached but no rejection candle
+    # Other 4 layers passing means the SETUP is structurally sound, but the
+    # market hasn't shown commitment at this level yet.
+    return (
+        "WATCH",
+        "watch",
+        "level 도달했으나 거부 신호 없음 — 진입 X, FORMING 또는 5/5 업그레이드 대기",
+    )
 
 
 def format_report(r: ValidationReport, *, no_emoji: bool = False) -> str:
@@ -165,9 +202,11 @@ def format_report(r: ValidationReport, *, no_emoji: bool = False) -> str:
 
     lines.append("")
     lines.append(f"{_glyph('score', no_emoji=no_emoji)} Score: {r.total_score}/5")
-    rec = "ENTER" if r.passes else "PASS"
-    flag = _glyph("enter" if r.passes else "block", no_emoji=no_emoji)
-    lines.append(f"{flag} Recommendation: {rec}")
+    rec_label, rec_flag, rec_note = _recommendation(r)
+    flag = _glyph(rec_flag, no_emoji=no_emoji)
+    lines.append(f"{flag} Recommendation: {rec_label}")
+    if rec_note:
+        lines.append(f"   → {rec_note}")
 
     # Suggestions for failed layers
     suggestions = _build_suggestions(r)
