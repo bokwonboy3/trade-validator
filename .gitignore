@@ -8,3 +8,5 @@ alerts.log
 .tv-state*.json
 scan.log
 .tv-env
+alerts.jsonl
+market_memory.jsonl

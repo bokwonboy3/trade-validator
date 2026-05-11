@@ -22,8 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from agents.runner import run_agentic_analysis
-from agents.types import AgentVerdict
+from agents.runner import run_agentic_analysis, run_agentic_analysis_with_specialists
+from agents.types import AgentVerdict, SpecialistOutput
 from alert_state import DEFAULT_STATE_PATH, AlertState
 from analysis.forming import FormingResult, detect_forming_rejection
 from analysis.indicators import add_ma
@@ -35,7 +35,7 @@ from analysis.scanner_logic import (
 )
 from data.binance import BinanceError, fetch_klines
 from output.formatter import ValidationReport, format_report
-from output.notify import build_channels, dispatch
+from output.notify import append_jsonl, build_channels, dispatch
 from scanner_config import ScannerConfig, load_config
 
 
@@ -59,6 +59,7 @@ class ScanResult:
     evaluation: SetupEvaluation | None = None
     forming: FormingResult | None = None  # set when in-progress 15m shows rejection forming
     agent_verdict: AgentVerdict | None = None  # agentic tier output (None if disabled)
+    agent_specialists: list[SpecialistOutput] | None = None  # per-specialist outputs
 
     @property
     def passes(self) -> bool:
@@ -128,9 +129,10 @@ def scan_symbol(symbol: str, *, default_rr: float = 3.0) -> ScanResult:
     # NB: dispatch threshold lives in ScannerConfig (defaults to 4); accessing
     # it would require a refactor. For now use 4 directly — matches default.
     AGENT_TRIGGER_SCORE = 4
+    agent_specialists: list[SpecialistOutput] | None = None
     if evaluation.total_score >= AGENT_TRIGGER_SCORE or forming is not None:
         try:
-            agent_verdict = run_agentic_analysis(
+            result = run_agentic_analysis_with_specialists(
                 evaluation,
                 df_15m=df_15m, df_1m=df_1m,
                 df_4h=df_4h, df_1h=df_1h,
@@ -138,13 +140,8 @@ def scan_symbol(symbol: str, *, default_rr: float = 3.0) -> ScanResult:
                 entry=setup.entry, sl=setup.sl, tp=setup.tp,
                 direction=direction,
             )
-            # Diagnostic: log per-specialist failure reasons so we can debug
-            # cron-environment issues (keychain locks, network blips, etc).
-            if agent_verdict is not None and hasattr(agent_verdict, "rationale"):
-                # The runner doesn't expose specialist objects here, but the
-                # rationale + downgrade flag plus stderr inside agent code
-                # gives us audit trail.
-                pass
+            if result is not None:
+                agent_verdict, agent_specialists = result
         except Exception as e:
             # NEVER let agent failures block alert dispatch.
             print(f"[agentic] {symbol} analysis failed: {e}", file=sys.stderr)
@@ -152,6 +149,7 @@ def scan_symbol(symbol: str, *, default_rr: float = 3.0) -> ScanResult:
     return ScanResult(
         symbol=symbol, setup=setup, evaluation=evaluation,
         forming=forming, agent_verdict=agent_verdict,
+        agent_specialists=agent_specialists,
     )
 
 
@@ -211,6 +209,7 @@ def build_report_for_alert(r: ScanResult, *, tier: Tier = "confirmed") -> Valida
         layer_5=ev.layer_5,
         advisory_15m=None,  # scanner mode skips advisory to keep alerts deterministic
         agent_verdict=r.agent_verdict,
+        agent_specialists=r.agent_specialists,
     )
 
 
@@ -218,6 +217,39 @@ def _log(msg: str, *, quiet: bool, file=sys.stdout) -> None:
     """Print msg unless quiet=True. Errors should always go to stderr separately."""
     if not quiet:
         print(msg, file=file)
+
+
+def _record_jsonl(r: ScanResult, *, tier: str) -> None:
+    """Append a structured record per dispatched alert."""
+    if r.setup is None or r.evaluation is None:
+        return
+    av = r.agent_verdict
+    record = {
+        "symbol": r.symbol,
+        "tier": tier,
+        "direction": r.setup.direction,
+        "entry": r.setup.entry,
+        "sl": r.setup.sl,
+        "tp": r.setup.tp,
+        "tier1_score": r.evaluation.total_score,
+        "layer_status": {
+            "L1": r.evaluation.layer_1.status,
+            "L2": r.evaluation.layer_2.status,
+            "L3": r.evaluation.layer_3.status,
+            "L4": r.evaluation.layer_4.status,
+            "L5": r.evaluation.layer_5.status,
+        },
+        "agent_verdict": getattr(av, "verdict", None) if av else None,
+        "agent_confidence": getattr(av, "confidence", None) if av else None,
+        "agent_downgraded": getattr(av, "downgraded_from_tier1", False) if av else False,
+        "specialist_failures": [
+            s.name for s in (r.agent_specialists or []) if getattr(s, "failed", False)
+        ],
+    }
+    try:
+        append_jsonl(record)
+    except Exception as e:
+        print(f"[scan] jsonl append failed: {e}", file=sys.stderr)
 
 
 def run_scan(
@@ -317,6 +349,7 @@ def run_scan(
             f"confirmed:{r.setup.direction}",
             r.setup.sl_swing_price,
         )
+        _record_jsonl(r, tier="confirmed")
     for r in new_forming:
         assert r.setup is not None
         report = build_report_for_alert(r, tier="forming")
@@ -326,6 +359,7 @@ def run_scan(
             f"forming:{r.setup.direction}",
             r.setup.sl_swing_price,
         )
+        _record_jsonl(r, tier="forming")
 
     state.save()
     return EXIT_OK
@@ -356,11 +390,78 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Cron 모드용 — 셋업이 통과해서 dispatch될 때만 stdout 출력",
     )
+    p.add_argument(
+        "--stats",
+        action="store_true",
+        help="최근 알람 통계 출력 후 종료 (scan 실행 안 함)",
+    )
+    p.add_argument(
+        "--stats-hours",
+        type=int,
+        default=24,
+        help="--stats lookback 시간 (default: 24)",
+    )
     return p.parse_args(argv)
+
+
+def print_stats(hours: int = 24, jsonl_path: str = "alerts.jsonl") -> None:
+    """Read alerts.jsonl, print summary stats over last `hours` window."""
+    import json
+    from collections import Counter
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    p = Path(jsonl_path)
+    if not p.exists():
+        print(f"No alerts logged yet ({jsonl_path} 없음).")
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    recent = []
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                rec = json.loads(line.strip())
+                ts = datetime.fromisoformat(rec.get("ts", ""))
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if ts >= cutoff:
+                recent.append(rec)
+
+    if not recent:
+        print(f"지난 {hours}h 동안 알람 없음.")
+        return
+
+    print(f"=== 최근 {hours}h 알람 통계 ===")
+    print(f"총 알람: {len(recent)}건\n")
+
+    by_symbol = Counter(r["symbol"] for r in recent)
+    by_tier = Counter(r.get("tier", "?") for r in recent)
+    by_agent_verdict = Counter(
+        r.get("agent_verdict") for r in recent if r.get("agent_verdict")
+    )
+    downgrades = sum(1 for r in recent if r.get("agent_downgraded"))
+    failed_specs: Counter = Counter()
+    for r in recent:
+        for s in r.get("specialist_failures") or []:
+            failed_specs[s] += 1
+
+    print(f"심볼별: {dict(by_symbol)}")
+    print(f"Tier별: {dict(by_tier)}")
+    if by_agent_verdict:
+        print(f"Agent verdict 분포: {dict(by_agent_verdict)}")
+        print(f"Agent downgrade: {downgrades}/{len(recent)} ({100*downgrades//max(1,len(recent))}%)")
+    if failed_specs:
+        print(f"Specialist 실패 빈도: {dict(failed_specs)}")
+    avg_conf = [r.get("agent_confidence") for r in recent if r.get("agent_confidence") is not None]
+    if avg_conf:
+        print(f"평균 confidence: {sum(avg_conf)/len(avg_conf):.0f}% (n={len(avg_conf)})")
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.stats:
+        print_stats(hours=args.stats_hours)
+        return EXIT_OK
     try:
         cfg = load_config(args.config)
     except Exception as e:

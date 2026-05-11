@@ -6,11 +6,13 @@ to all of them, logging (but not crashing on) per-channel failures.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Final, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
 
 import requests
 
@@ -21,6 +23,7 @@ TELEGRAM_CHAT_ID_ENV: Final = "TELEGRAM_CHAT_ID"
 TELEGRAM_API_BASE: Final = "https://api.telegram.org"
 TELEGRAM_TIMEOUT_SEC: Final = 10
 TELEGRAM_MAX_LEN: Final = 4096  # Bot API hard limit
+DEFAULT_JSONL_PATH: Final = "alerts.jsonl"
 
 
 @runtime_checkable
@@ -134,6 +137,15 @@ def build_channels(cfg: NotificationsConfig) -> list[Channel]:
                 continue
             channels.append(tg)
     return channels
+
+
+def append_jsonl(record: dict[str, Any], path: str = DEFAULT_JSONL_PATH) -> None:
+    """Append one structured alert record to alerts.jsonl for later analysis."""
+    record["ts"] = datetime.now(timezone.utc).isoformat()
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def dispatch(channels: list[Channel], message: str) -> dict[str, bool]:
