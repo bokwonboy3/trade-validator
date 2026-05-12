@@ -22,23 +22,29 @@ AGENT_BACKEND_ENV: Final = "AGENT_BACKEND"
 AGENT_MODEL_ENV: Final = "AGENT_MODEL"
 
 
-def _model_kwarg() -> dict[str, str]:
-    """Pass `model=` only when AGENT_MODEL is explicitly set, otherwise use the
-    client's own default. Same env var works for both CLI and API backends:
-    CLI accepts aliases (`sonnet`, `opus`, `haiku`) and full names; API expects
-    full names (`claude-sonnet-4-6`, `claude-opus-4-7`, etc.)."""
+def _model_kwarg(override: str | None = None) -> dict[str, str]:
+    """Pass `model=` only when explicitly set, otherwise use the client's own
+    default. Precedence: ``override`` argument > ``AGENT_MODEL`` env var.
+    Same alias works for both CLI and API backends — CLI accepts aliases
+    (`sonnet`, `opus`, `haiku`) and full names; API expects full names
+    (`claude-sonnet-4-6`, `claude-opus-4-7`, `claude-haiku-4-5-20251001`)."""
+    if override:
+        return {"model": override.strip()}
     m = os.environ.get(AGENT_MODEL_ENV, "").strip()
     return {"model": m} if m else {}
 
 
-def get_default_client() -> Any | None:
+def get_default_client(model: str | None = None) -> Any | None:
     """Return a client (CLI or API) per selection rules above, or None.
 
-    Model is taken from AGENT_MODEL env var if set; otherwise each client's
-    own default (Sonnet 4.6).
+    Args:
+        model: explicit model override. Takes precedence over the AGENT_MODEL
+            env var. Use this for per-call-site model tiering (e.g., Haiku for
+            the position monitor's lightweight checks vs. Sonnet for entry
+            decisions). If None, falls back to AGENT_MODEL, then client default.
     """
     backend = os.environ.get(AGENT_BACKEND_ENV, "").strip().lower()
-    model_kw = _model_kwarg()
+    model_kw = _model_kwarg(override=model)
 
     if backend == "none":
         return None

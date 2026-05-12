@@ -582,6 +582,80 @@ def test_advisor_skips_when_not_due(tmpdb):
     assert events == []  # suppressed by advisor_due
 
 
+def test_advisor_uses_haiku_tiered_client(tmpdb, monkeypatch):
+    """Phase 8a invariant: monitor's advisor must request a Haiku-tiered client.
+    Sonnet is overkill for "did the thesis break?" and burns 3-5× the tokens.
+    Verifies the client passed into `evaluate` is constructed with model='haiku'
+    (or whatever MONITOR_ADVISOR_MODEL overrides to)."""
+    monkeypatch.delenv("MONITOR_ADVISOR_MODEL", raising=False)
+    with connect(tmpdb) as conn:
+        insert_alert_idempotent(conn, _alert("A1"))
+        record_trade(
+            conn, alert_id="A1",
+            filled_entry=80000, filled_sl=1.0, filled_tp=999999.0,
+        )
+    from agents.position_advisor import AdvisorOutput
+    import monitor as mon
+
+    captured_models: list = []
+
+    def fake_get_default_client(model=None):
+        captured_models.append(model)
+        return object()  # opaque sentinel — advisor stub doesn't actually call it
+
+    monkeypatch.setattr(
+        "agents.backend.get_default_client", fake_get_default_client,
+    )
+    state = MonitorState(path=tmpdb.with_suffix(".monitor.json"))
+    advisor_stub = lambda **kwargs: AdvisorOutput(
+        action="HOLD", confidence=7, rationale="ok",
+    )
+    fake = lambda s: _klines_df(highs=[80400], lows=[80400], closes=[80400])
+    with connect(tmpdb) as conn:
+        mon.check_position_advisor(
+            conn, state,
+            dispatcher_with_buttons=lambda m, kb: None,
+            current_price_fetcher=fake,
+            df_4h_fetcher=fake, df_1h_fetcher=fake, df_15m_fetcher=fake,
+            advisor_evaluate=advisor_stub,
+        )
+    assert captured_models == ["haiku"], (
+        f"expected monitor to request Haiku, got {captured_models!r}"
+    )
+
+
+def test_advisor_haiku_override_via_env(tmpdb, monkeypatch):
+    """MONITOR_ADVISOR_MODEL env should override the Haiku default."""
+    monkeypatch.setenv("MONITOR_ADVISOR_MODEL", "sonnet")
+    with connect(tmpdb) as conn:
+        insert_alert_idempotent(conn, _alert("A1"))
+        record_trade(
+            conn, alert_id="A1",
+            filled_entry=80000, filled_sl=1.0, filled_tp=999999.0,
+        )
+    from agents.position_advisor import AdvisorOutput
+    import monitor as mon
+
+    captured: list = []
+    monkeypatch.setattr(
+        "agents.backend.get_default_client",
+        lambda model=None: captured.append(model) or object(),
+    )
+    state = MonitorState(path=tmpdb.with_suffix(".monitor.json"))
+    fake = lambda s: _klines_df(highs=[80400], lows=[80400], closes=[80400])
+    with connect(tmpdb) as conn:
+        mon.check_position_advisor(
+            conn, state,
+            dispatcher_with_buttons=lambda m, kb: None,
+            current_price_fetcher=fake,
+            df_4h_fetcher=fake, df_1h_fetcher=fake, df_15m_fetcher=fake,
+            advisor_evaluate=lambda **kw: AdvisorOutput(
+                action="HOLD", confidence=5, rationale="x",
+            ),
+        )
+    assert captured == ["sonnet"]
+
+
 def test_advisor_failed_no_alert_but_records_run(tmpdb):
     """If advisor returns failed=True, no alert sent but run timestamp updated
     so we don't immediately retry on next cron tick."""

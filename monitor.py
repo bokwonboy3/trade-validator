@@ -44,6 +44,29 @@ PNL_MILESTONES: Final[tuple[float, ...]] = (-5.0, -2.0, -1.0, 1.0, 2.0, 5.0)
 # Phase 6: how often (per trade) to run the LLM position advisor.
 ADVISOR_INTERVAL_HOURS: Final[float] = 4.0
 
+# Phase 8a — model tiering: position monitor needs only "did the thesis break?"
+# judgement, not full setup analysis. Haiku is ~3-5× cheaper than Sonnet and
+# easily capable of this task. Override via MONITOR_ADVISOR_MODEL env if needed
+# (e.g., set to "sonnet" to revert, or "haiku-4-5-20251001" for a specific
+# pin). Scanner entry decisions remain on whatever AGENT_MODEL specifies.
+MONITOR_ADVISOR_MODEL_ENV: Final = "MONITOR_ADVISOR_MODEL"
+MONITOR_ADVISOR_DEFAULT_MODEL: Final[str] = "haiku"
+
+
+def _monitor_advisor_model() -> str:
+    return (
+        os.environ.get(MONITOR_ADVISOR_MODEL_ENV, "").strip()
+        or MONITOR_ADVISOR_DEFAULT_MODEL
+    )
+
+
+def _get_monitor_advisor_client():
+    """Lazy import to keep monitor.py importable in test envs without the
+    agentic stack. Returns a client tuned for monitor tier (Haiku by default)
+    or None if no backend is configured."""
+    from agents.backend import get_default_client
+    return get_default_client(model=_monitor_advisor_model())
+
 
 # --- Monitor state (idempotency for trend reversal + milestone + advisor) ---
 @dataclass
@@ -535,6 +558,9 @@ def check_position_advisor(
         from agents.position_advisor import evaluate as _ev
         advisor_evaluate = _ev
 
+    # Phase 8a: one Haiku-tiered client shared across this tick's advisor calls.
+    advisor_client = _get_monitor_advisor_client()
+
     events: list[MonitorEvent] = []
     for trade in open_trades(conn):
         if not state.advisor_due(trade["id"], interval_hours=interval_hours):
@@ -561,6 +587,7 @@ def check_position_advisor(
             df_4h=df_4h,
             df_1h=df_1h,
             df_15m=df_15m,
+            client=advisor_client,
         )
         # Always record the run timestamp so we don't retry every cron tick on failure
         state.record_advisor_run(trade["id"])

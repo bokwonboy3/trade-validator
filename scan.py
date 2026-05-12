@@ -123,34 +123,16 @@ def scan_symbol(symbol: str, *, default_rr: float = 3.0) -> ScanResult:
             now_ms=int(time.time() * 1000),
         )
 
-    # Agentic analysis (Tier 2~4) — only run when Tier 1 would actually alert
-    # (score >= dispatch threshold OR forming detected). Skips agents on
-    # 3/5 setups that won't dispatch anyway, keeping cron tick under budget.
-    agent_verdict = None
-    # NB: dispatch threshold lives in ScannerConfig (defaults to 4); accessing
-    # it would require a refactor. For now use 4 directly — matches default.
-    AGENT_TRIGGER_SCORE = 4
-    agent_specialists: list[SpecialistOutput] | None = None
-    if evaluation.total_score >= AGENT_TRIGGER_SCORE or forming is not None:
-        try:
-            result = run_agentic_analysis_with_specialists(
-                evaluation,
-                df_15m=df_15m, df_1m=df_1m,
-                df_4h=df_4h, df_1h=df_1h,
-                symbol=symbol,
-                entry=setup.entry, sl=setup.sl, tp=setup.tp,
-                direction=direction,
-            )
-            if result is not None:
-                agent_verdict, agent_specialists = result
-        except Exception as e:
-            # NEVER let agent failures block alert dispatch.
-            print(f"[agentic] {symbol} analysis failed: {e}", file=sys.stderr)
-
+    # NB (Phase 8a): agent invocation deliberately removed from this function.
+    # Agents are now run by _dispatch_new_setups() ONLY for setups that pass
+    # the idempotency check — same swing won't burn 5 specialist calls every
+    # 2-min cron tick. Tier-1 (5-layer) scoring still runs every tick so
+    # summary lines + watchlist data stay current.
+    # The kline frames needed for the agent call (df_4h/1h/15m/1m) are
+    # re-fetched at dispatch time, since storing them in ScanResult would
+    # bloat memory across symbols.
     return ScanResult(
-        symbol=symbol, setup=setup, evaluation=evaluation,
-        forming=forming, agent_verdict=agent_verdict,
-        agent_specialists=agent_specialists,
+        symbol=symbol, setup=setup, evaluation=evaluation, forming=forming,
     )
 
 
@@ -326,6 +308,42 @@ def run_scan(
     return EXIT_OK
 
 
+def _attach_agent_verdict(r: ScanResult) -> None:
+    """Run the 5-specialist agent pipeline for a NEW (idempotency-passed)
+    setup, mutating ``r.agent_verdict`` / ``r.agent_specialists`` in place.
+
+    Phase 8a: this call used to live inside ``scan_symbol`` and re-fired on
+    every 2-min cron tick for the same swing setup. Now it only runs once
+    per dispatch — agent cost scales with *new* setups, not with cron ticks.
+
+    Klines are re-fetched here (not stored in ScanResult) to keep per-symbol
+    memory small in the no-dispatch hot path.
+    """
+    assert r.setup is not None and r.evaluation is not None
+    try:
+        df_4h = fetch_klines(r.symbol, "4h", limit=100)
+        df_1h = fetch_klines(r.symbol, "1h", limit=100)
+        df_15m = fetch_klines(r.symbol, "15m", limit=200)
+        df_1m = fetch_klines(r.symbol, "1m", limit=30, drop_unclosed=False)
+    except BinanceError as e:
+        print(f"[agentic] {r.symbol} kline refetch failed: {e}", file=sys.stderr)
+        return
+
+    try:
+        result = run_agentic_analysis_with_specialists(
+            r.evaluation,
+            df_15m=df_15m, df_1m=df_1m, df_4h=df_4h, df_1h=df_1h,
+            symbol=r.symbol,
+            entry=r.setup.entry, sl=r.setup.sl, tp=r.setup.tp,
+            direction=r.setup.direction,
+        )
+        if result is not None:
+            r.agent_verdict, r.agent_specialists = result
+    except Exception as e:
+        # NEVER let agent failures block alert dispatch.
+        print(f"[agentic] {r.symbol} analysis failed: {type(e).__name__}: {e}", file=sys.stderr)
+
+
 def _dispatch_new_setups(
     state: AlertState,
     confirmed: list[ScanResult],
@@ -365,6 +383,12 @@ def _dispatch_new_setups(
     if not new_confirmed and not new_forming:
         _log("No new setups to dispatch.", quiet=quiet)
         return
+
+    # Phase 8a: agents run ONLY for new setups that survived idempotency.
+    # If 3 symbols stayed at score 4/5 for an hour, agents used to fire
+    # 5 × 3 × 30 = 450 times in that window; now: 0 (same swings → suppressed).
+    for r in new_confirmed + new_forming:
+        _attach_agent_verdict(r)
 
     _log(
         f"\ndispatching {len(new_confirmed)} CONFIRMED + {len(new_forming)} FORMING "

@@ -111,8 +111,28 @@ def get_updates(token: str, offset: int) -> list[dict]:
     return body.get("result", [])
 
 
-def send_message(token: str, chat_id: int | str, text: str) -> None:
-    _tg("sendMessage", token, chat_id=chat_id, text=text)
+def send_message(
+    token: str, chat_id: int | str, text: str,
+    *, inline_keyboard: list[list[dict]] | None = None,
+) -> None:
+    payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+    if inline_keyboard:
+        payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+    _tg("sendMessage", token, **payload)
+
+
+def _close_buttons(trade_id: int) -> list[list[dict]]:
+    """Manual-close button pair to attach to entry confirmation / /status.
+
+    Mirrors the entry-button design (take_market + take_custom). `#tid` is
+    in the label so /status (multiple open trades) stays unambiguous.
+    """
+    return [
+        [
+            {"text": f"🔴 #{trade_id} 즉시 청산", "callback_data": f"close_market:{trade_id}"},
+            {"text": f"✏️ #{trade_id} 가격 입력", "callback_data": f"close_custom:{trade_id}"},
+        ],
+    ]
 
 
 def answer_callback(token: str, callback_id: str, text: str = "") -> None:
@@ -149,8 +169,8 @@ def handle_take_market(
     send_message(
         token, chat_id,
         f"✅ Trade #{tid} opened (scanner 가격 사용)\n"
-        f"   entry={alert['entry']:.2f} SL={alert['sl']:.2f} TP={alert['tp']:.2f}{size_str}\n"
-        f"   종료 시: /close {tid} <exit_price>",
+        f"   entry={alert['entry']:.2f} SL={alert['sl']:.2f} TP={alert['tp']:.2f}{size_str}",
+        inline_keyboard=_close_buttons(tid),
     )
 
 
@@ -224,6 +244,69 @@ def handle_close_now(
         f"   exit={current:.2f}\n"
         f"   {sign} PnL: {pnl_pct:+.2f}%{usd}\n"
         f"   (실제 fill 가격이 다르면 /correct {trade_id} <price>)"
+    )
+
+
+def handle_close_market(
+    *, token: str, chat_id: int, trade_id: int, db_path: Path,
+) -> None:
+    """User-initiated market close (Phase 9). Same execution path as
+    handle_close_now but reason='manual_market' + different wording — the
+    monitor's close_now alert is conceptually "trend broke, get out",
+    this one is "I changed my mind, get out".
+    """
+    from data.binance import BinanceError, fetch_klines
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT t.*, a.symbol FROM trades t JOIN alerts a ON t.alert_id = a.id "
+            "WHERE t.id = ? AND t.status = 'open'",
+            (trade_id,),
+        ).fetchone()
+        if row is None:
+            send_message(token, chat_id, f"❌ Trade #{trade_id} 없거나 이미 종료됨.")
+            return
+        symbol = row["symbol"]
+        try:
+            df = fetch_klines(symbol, "1m", 1, drop_unclosed=False)
+            current = float(df.iloc[-1]["close"])
+        except (BinanceError, IndexError, KeyError) as e:
+            send_message(token, chat_id, f"❌ 가격 조회 실패: {e}")
+            return
+        try:
+            closed = close_trade(
+                conn, trade_id=trade_id, exit_price=current,
+                close_reason="manual_market",
+            )
+        except ValueError as e:
+            send_message(token, chat_id, f"❌ {e}")
+            return
+    pnl_pct = closed["pnl_pct"]
+    sign = "🟢" if pnl_pct > 0 else "🔴" if pnl_pct < 0 else "⚪"
+    usd = f" (${closed['pnl_usd']:+.2f})" if closed.get("pnl_usd") is not None else ""
+    send_message(
+        token, chat_id,
+        f"✅ Trade #{trade_id} 청산 (시장가)\n"
+        f"   exit={current:.2f}\n"
+        f"   {sign} PnL: {pnl_pct:+.2f}%{usd}\n"
+        f"   (실제 fill 가격이 다르면 /correct {trade_id} <price>)",
+    )
+
+
+def handle_close_custom_start(
+    *, token: str, chat_id: int, trade_id: int, conv: ConvState,
+) -> None:
+    """Start multi-step flow for user-specified exit price.
+
+    Stores trade_id in conv.partial since this flow is trade-scoped, not
+    alert-scoped (conv.alert_id stays None to avoid collision with take flow).
+    """
+    conv.awaiting = "close_price"
+    conv.alert_id = None
+    conv.partial = {"trade_id": trade_id}
+    send_message(
+        token, chat_id,
+        f"Trade #{trade_id} 청산 가격을 답장으로 보내세요 (예: 81600).\n"
+        f"중단하려면 /cancel",
     )
 
 
@@ -332,7 +415,14 @@ def handle_reply(
             except Exception as e:
                 send_message(token, chat_id, f"❌ status 조회 실패: {e}")
                 return
-        send_message(token, chat_id, _format_status_text(statuses))
+        # Each open trade gets its own close-button row so user can act
+        # directly from /status instead of scrolling back to the entry
+        # confirmation message.
+        keyboard = [row for s in statuses for row in _close_buttons(s.trade_id)]
+        send_message(
+            token, chat_id, _format_status_text(statuses),
+            inline_keyboard=keyboard or None,
+        )
         return
 
     # Active conversation flow?
@@ -357,6 +447,34 @@ def handle_reply(
         value = float(text)
     except ValueError:
         send_message(token, chat_id, "숫자만 답장 가능. 예: 81250")
+        return
+
+    if conv.awaiting == "close_price":
+        tid = conv.partial.get("trade_id")
+        if tid is None:
+            send_message(token, chat_id, "❌ 청산 컨텍스트 손실. 다시 시도하세요.")
+            conv.reset()
+            return
+        try:
+            with connect(db_path) as conn:
+                closed = close_trade(
+                    conn, trade_id=int(tid), exit_price=value,
+                    close_reason="manual_custom",
+                )
+        except ValueError as e:
+            send_message(token, chat_id, f"❌ {e}")
+            conv.reset()
+            return
+        pnl = closed["pnl_pct"]
+        sign = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+        usd = f" (${closed['pnl_usd']:+.2f})" if closed.get("pnl_usd") is not None else ""
+        send_message(
+            token, chat_id,
+            f"✅ Trade #{tid} 청산 (가격 입력)\n"
+            f"   exit={value:.2f}\n"
+            f"   {sign} PnL: {pnl:+.2f}%{usd}",
+        )
+        conv.reset()
         return
 
     if conv.awaiting == "entry":
@@ -394,8 +512,8 @@ def handle_reply(
         send_message(
             token, chat_id,
             f"✅ Trade #{tid} opened\n"
-            f"   entry={conv.partial['entry']} SL={conv.partial['sl']} TP={conv.partial['tp']}{size_str}\n"
-            f"   종료 시: /close {tid} <exit_price>",
+            f"   entry={conv.partial['entry']} SL={conv.partial['sl']} TP={conv.partial['tp']}{size_str}",
+            inline_keyboard=_close_buttons(tid),
         )
         conv.reset()
         return
@@ -441,6 +559,24 @@ def process_update(
                 return
             handle_close_now(
                 token=token, chat_id=chat_id, trade_id=tid, db_path=db_path,
+            )
+        elif action == "close_market":
+            try:
+                tid = int(payload)
+            except ValueError:
+                send_message(token, chat_id, f"❌ trade id 파싱 실패: {payload!r}")
+                return
+            handle_close_market(
+                token=token, chat_id=chat_id, trade_id=tid, db_path=db_path,
+            )
+        elif action == "close_custom":
+            try:
+                tid = int(payload)
+            except ValueError:
+                send_message(token, chat_id, f"❌ trade id 파싱 실패: {payload!r}")
+                return
+            handle_close_custom_start(
+                token=token, chat_id=chat_id, trade_id=tid, conv=conv,
             )
         elif action == "observe":
             try:
