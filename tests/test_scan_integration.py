@@ -164,3 +164,44 @@ def test_run_scan_writes_state_even_with_no_passes(mocker, tmp_path):
     assert state_path.exists()
     body = json.loads(state_path.read_text())
     assert any(a["symbol"] == "OLD" for a in body["alerts"])
+
+
+# --- Phase 8a: agent invocation moved post-idempotency ---
+
+def test_scan_symbol_does_not_call_agents(fixture_fetch, mocker):
+    """Phase 8a invariant: scan_symbol must NEVER invoke the specialist pipeline.
+    Agents only run inside _dispatch_new_setups for setups that survived
+    idempotency. This guards against a regression where 4/5 setups
+    re-fire 5 specialist calls every 2-min cron tick."""
+    spy = mocker.patch("scan.run_agentic_analysis_with_specialists")
+    r = scan_symbol("BTCUSDT")
+    assert r.agent_verdict is None
+    assert r.agent_specialists is None
+    spy.assert_not_called()
+
+
+def test_run_scan_calls_agents_only_for_new_setups(fixture_fetch, tmp_path, mocker):
+    """First tick: new setup → agent invoked. Second tick (same swing,
+    idempotency suppression): agent NOT invoked again."""
+    # Force the fixture to look like a dispatchable setup. The fixture
+    # already passes most layers — if total_score < min_score, agent never
+    # fires and the test asserts a no-op. To make the test meaningful, set
+    # min_score=1 so any successful evaluation dispatches.
+    cfg = _cfg(min_score=1)
+    spy = mocker.patch(
+        "scan.run_agentic_analysis_with_specialists", return_value=None,
+    )
+    state = AlertState(path=tmp_path / "state.json")
+    run_scan(cfg, state=state)
+    first_calls = spy.call_count
+
+    # Reload state to simulate next cron tick
+    state2 = AlertState.load(tmp_path / "state.json")
+    spy.reset_mock()
+    run_scan(cfg, state=state2)
+    second_calls = spy.call_count
+
+    # First tick must have invoked agents at least once for the dispatched setup
+    assert first_calls >= 1
+    # Second tick must NOT re-invoke (same swing → idempotent suppression)
+    assert second_calls == 0
