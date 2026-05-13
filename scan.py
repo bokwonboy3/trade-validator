@@ -242,6 +242,14 @@ def _record_jsonl(r: ScanResult, *, tier: str, alert_id: str) -> None:
             s.name for s in (r.agent_specialists or []) if getattr(s, "failed", False)
         ],
     }
+    # Phase 8c PR-3: vision pre-entry check telemetry (only present when it ran).
+    if av and getattr(av, "vision", None) is not None:
+        vis = av.vision
+        record["vision_verdict"] = vis.verdict
+        record["vision_confidence"] = vis.confidence
+        record["vision_overrode"] = av.vision_overrode
+        record["vision_dry_run"] = av.vision_dry_run
+        record["vision_failed"] = vis.failed
     try:
         append_jsonl(record)
     except Exception as e:
@@ -308,7 +316,25 @@ def run_scan(
     return EXIT_OK
 
 
-def _attach_agent_verdict(r: ScanResult) -> None:
+def _build_entry_vision_client():
+    """Build a Sonnet 4.6 vision client for the pre-entry check (Phase 8c
+    PR-3), or return None when the tier is disabled / API key missing.
+
+    Built once per dispatch loop and shared across symbols so the cost
+    guard sees the full per-tick spend before deciding to block."""
+    from agents.cost_guard import from_env as cost_guard_from_env
+    from agents.sdk_client import get_vision_client_or_none
+    from agents.vision_config import vision_check_enabled
+
+    if not vision_check_enabled():
+        return None
+    return get_vision_client_or_none(
+        model="claude-sonnet-4-6",
+        cost_guard=cost_guard_from_env(),
+    )
+
+
+def _attach_agent_verdict(r: ScanResult, *, vision_client=None) -> None:
     """Run the 5-specialist agent pipeline for a NEW (idempotency-passed)
     setup, mutating ``r.agent_verdict`` / ``r.agent_specialists`` in place.
 
@@ -318,6 +344,10 @@ def _attach_agent_verdict(r: ScanResult) -> None:
 
     Klines are re-fetched here (not stored in ScanResult) to keep per-symbol
     memory small in the no-dispatch hot path.
+
+    Phase 8c PR-3: ``vision_client`` (optional) triggers a multimodal
+    pre-entry check after the recommender. It can downgrade — never upgrade
+    — the verdict; failures fall back silently to the text decision.
     """
     assert r.setup is not None and r.evaluation is not None
     try:
@@ -336,6 +366,7 @@ def _attach_agent_verdict(r: ScanResult) -> None:
             symbol=r.symbol,
             entry=r.setup.entry, sl=r.setup.sl, tp=r.setup.tp,
             direction=r.setup.direction,
+            vision_client=vision_client,
         )
         if result is not None:
             r.agent_verdict, r.agent_specialists = result
@@ -387,8 +418,11 @@ def _dispatch_new_setups(
     # Phase 8a: agents run ONLY for new setups that survived idempotency.
     # If 3 symbols stayed at score 4/5 for an hour, agents used to fire
     # 5 × 3 × 30 = 450 times in that window; now: 0 (same swings → suppressed).
+    # Phase 8c PR-3: one vision client (Sonnet 4.6) shared across this
+    # dispatch loop so the cost guard sees combined spend.
+    vision_client = _build_entry_vision_client()
     for r in new_confirmed + new_forming:
-        _attach_agent_verdict(r)
+        _attach_agent_verdict(r, vision_client=vision_client)
 
     _log(
         f"\ndispatching {len(new_confirmed)} CONFIRMED + {len(new_forming)} FORMING "

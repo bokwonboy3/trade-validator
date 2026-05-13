@@ -104,6 +104,7 @@ def run_agentic_analysis(
     tp: float,
     direction: Direction,
     client: Any | None = None,
+    vision_client: Any | None = None,
 ) -> AgentVerdict | None:
     """Run the agentic tier. Returns AgentVerdict only (compat wrapper).
 
@@ -112,7 +113,7 @@ def run_agentic_analysis(
     result = run_agentic_analysis_with_specialists(
         ev, df_15m=df_15m, df_1m=df_1m, df_4h=df_4h, df_1h=df_1h,
         symbol=symbol, entry=entry, sl=sl, tp=tp, direction=direction,
-        client=client,
+        client=client, vision_client=vision_client,
     )
     return result[0] if result else None
 
@@ -130,6 +131,7 @@ def run_agentic_analysis_with_specialists(
     tp: float,
     direction: Direction,
     client: Any | None = None,
+    vision_client: Any | None = None,
 ) -> tuple[AgentVerdict, list[SpecialistOutput]] | None:
     """Run the agentic tier. Returns (AgentVerdict, list[SpecialistOutput]) for
     rich display, or None when no backend available."""
@@ -203,6 +205,26 @@ def run_agentic_analysis_with_specialists(
         specialists=specialists,
         meta=meta,
     )
+
+    # Phase 8c PR-3: optional vision second-opinion. Runs only when the
+    # caller passed a ``vision_client`` and ``VISION_CHECK_DISABLED`` is
+    # unset. Can downgrade the verdict; never upgrades; failure is silent.
+    if vision_client is not None:
+        try:
+            from agents.vision_check import apply_vision_check
+            verdict = apply_vision_check(
+                verdict,
+                df_4h=df_4h, df_1h=df_1h, df_15m=df_15m,
+                symbol=symbol, direction=direction,
+                entry=entry, sl=sl, tp=tp,
+                vision_client=vision_client,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(
+                f"[agentic] vision_check failed (continuing): "
+                f"{type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
 
     # Record to market memory for cross-run continuity. Best-effort —
     # any IO error is logged but doesn't fail the verdict.
