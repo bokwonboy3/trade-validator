@@ -68,6 +68,25 @@ def _get_monitor_advisor_client():
     return get_default_client(model=_monitor_advisor_model())
 
 
+def _get_monitor_vision_client():
+    """Lazy-build a vision client for the advisor's second-opinion call.
+
+    Sonnet 4.6 is used regardless of MONITOR_ADVISOR_MODEL — Haiku is not
+    reliable enough at multi-panel chart reading. Returns None when the
+    vision tier is globally disabled, the advisor toggle is off, or no
+    API key is set (graceful degradation)."""
+    from agents.cost_guard import from_env as cost_guard_from_env
+    from agents.sdk_client import get_vision_client_or_none
+    from agents.vision_config import vision_advisor_enabled
+
+    if not vision_advisor_enabled():
+        return None
+    return get_vision_client_or_none(
+        model="claude-sonnet-4-6",
+        cost_guard=cost_guard_from_env(),
+    )
+
+
 # --- Monitor state (idempotency for trend reversal + milestone + advisor) ---
 @dataclass
 class ReversalAlertRecord:
@@ -560,6 +579,8 @@ def check_position_advisor(
 
     # Phase 8a: one Haiku-tiered client shared across this tick's advisor calls.
     advisor_client = _get_monitor_advisor_client()
+    # Phase 8c: optional Sonnet-tiered vision client shared across this tick.
+    vision_client = _get_monitor_vision_client()
 
     events: list[MonitorEvent] = []
     for trade in open_trades(conn):
@@ -588,23 +609,33 @@ def check_position_advisor(
             df_1h=df_1h,
             df_15m=df_15m,
             client=advisor_client,
+            stop_loss=trade.get("filled_sl"),
+            take_profit=trade.get("filled_tp"),
+            vision_client=vision_client,
         )
         # Always record the run timestamp so we don't retry every cron tick on failure
         state.record_advisor_run(trade["id"])
         if result.failed:
             continue
+        detail: dict = {
+            "action": result.action,
+            "confidence": result.confidence,
+            "rationale": result.rationale,
+            "pnl_pct": pnl_pct,
+        }
+        if result.vision is not None:
+            detail["vision_action"] = result.vision.action
+            detail["vision_confidence"] = result.vision.confidence
+            detail["vision_overrode"] = result.vision_overrode
+            detail["vision_dry_run"] = result.dry_run
+            detail["vision_failed"] = result.vision.failed
         events.append(
             MonitorEvent(
                 kind="advisor",
                 trade_id=trade["id"],
                 symbol=trade["symbol"],
                 direction=trade["direction"],
-                detail={
-                    "action": result.action,
-                    "confidence": result.confidence,
-                    "rationale": result.rationale,
-                    "pnl_pct": pnl_pct,
-                },
+                detail=detail,
             )
         )
         if dispatcher_with_buttons:

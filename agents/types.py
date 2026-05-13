@@ -64,6 +64,19 @@ class MetaJudgeOutput:
 
 
 @dataclass(frozen=True)
+class VisionEntryVerdict:
+    """Pre-entry vision second-opinion (Phase 8c PR-3). Always advisory —
+    the downgrade-only merge in ``vision_check`` decides whether the
+    enforced verdict actually changes."""
+
+    verdict: Verdict
+    confidence: int  # 1~10
+    rationale: str
+    failed: bool = False
+    failure_reason: str = ""
+
+
+@dataclass(frozen=True)
 class AgentVerdict:
     """The final agentic verdict, ALWAYS bound by Tier 1 (downgrade-only)."""
 
@@ -72,3 +85,11 @@ class AgentVerdict:
     rationale: str
     tier1_verdict: Verdict  # for transparency / audit
     downgraded_from_tier1: bool = False
+    # Phase 8c PR-3: vision pre-entry check telemetry. Populated only when
+    # the vision tier ran for this verdict; ``vision_overrode`` is True iff
+    # the vision pass actually downgraded the verdict from its pre-vision
+    # state. ``vision_dry_run`` records "vision ran but its override was
+    # logged not enforced" (VISION_OVERRIDE_DRY_RUN).
+    vision: VisionEntryVerdict | None = None
+    vision_overrode: bool = False
+    vision_dry_run: bool = False
