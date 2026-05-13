@@ -20,6 +20,32 @@ Design notes:
   pixel size (1024×1600) regardless of timeframe candle counts.
 - Insufficient data on any sub-frame surfaces as an empty / partial panel
   rather than a hard error — the higher-timeframe context is still useful.
+
+Parity with Binance / TradingView — what matches and what doesn't:
+
+  MATCHES exactly:
+    - OHLCV values: pulled from Binance's own klines API.
+    - MA25, MA99: simple rolling means on close, same formula as Binance.
+    - RSI(14): Wilder-smoothed (book p.65 reference parity, see
+      ``test_rsi_matches_wilder_canonical_reference``).
+    - Candle coloring: green when close > open, red otherwise.
+
+  INTENTIONAL DEVIATIONS:
+    - Forming (unclosed) candle is DROPPED before render
+      (``fetch_klines(drop_unclosed=True)``). The framework scores on
+      closed candles, so the chart reflects exactly what Tier-1 saw.
+    - MA7 is NOT drawn — the trading framework only uses MA25 / MA99
+      for alignment, so omitting MA7 keeps the chart less cluttered.
+    - Swing-high (▼) and swing-low (▲) markers are OUR overlay
+      (n=5 local-pivot detection). Binance doesn't draw these natively;
+      the vision system prompts call them out so the model uses them as
+      structural anchors rather than mistaking them for Binance marks.
+    - Time axis is UTC. Binance UI defaults to the operator's local time;
+      using UTC keeps the rendered image deterministic for caching.
+
+  COSMETIC (no material impact on interpretation):
+    - mplfinance "yahoo" style colors (same convention as Binance).
+    - Date tick label format and candle spacing differ from Binance UI.
 """
 from __future__ import annotations
 
@@ -64,12 +90,48 @@ class TradeLevels:
 
 
 def _rsi(close: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
-    """SMA-smoothed RSI. NaN for the first ``period`` rows."""
+    """Wilder-smoothed RSI — matches the TradingView / Binance default.
+
+    Why Wilder (not SMA-rolling-mean): Binance's chart panel uses Wilder's
+    smoothing, which is what traders see. An SMA-smoothed RSI diverges
+    from Binance by 5–10 points in trending markets, which would make the
+    vision model's reading disagree with what the operator sees.
+
+    Standard Wilder formula (from "New Concepts in Technical Trading
+    Systems", 1978):
+      - Day `period`: avg = simple mean of the first `period` values.
+      - Day t > period: avg_t = (avg_{t-1} * (period-1) + x_t) / period.
+
+    Note: ``pandas.Series.ewm(alpha=1/period, adjust=False)`` performs
+    the recursive smoothing but does NOT use the SMA seed Wilder
+    prescribes — its first value equals the first raw input. We
+    therefore implement the seed-then-recurse loop explicitly to match
+    Binance / TradingView exactly. Verified against Wilder's own
+    published example (book p.65, 19-row series).
+    """
+    import numpy as np  # local — keep module-level imports minimal
+
     delta = close.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss.replace(0, pd.NA)
-    return 100 - (100 / (1 + rs))
+    gain = delta.clip(lower=0).to_numpy(dtype=float)
+    loss = (-delta.clip(upper=0)).to_numpy(dtype=float)
+    n = len(close)
+    rsi = np.full(n, np.nan, dtype=float)
+    if n <= period:
+        return pd.Series(rsi, index=close.index)
+
+    # Wilder seed: index `period` (0-based) uses the SIMPLE mean of the
+    # first `period` gain/loss values (indices 1..period inclusive, since
+    # delta[0] is NaN).
+    avg_gain = float(np.mean(gain[1 : period + 1]))
+    avg_loss = float(np.mean(loss[1 : period + 1]))
+    rsi[period] = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+
+    # Recursive smoothing from index period+1 onward.
+    for i in range(period + 1, n):
+        avg_gain = (avg_gain * (period - 1) + gain[i]) / period
+        avg_loss = (avg_loss * (period - 1) + loss[i]) / period
+        rsi[i] = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+    return pd.Series(rsi, index=close.index)
 
 
 def _prepare(df: pd.DataFrame) -> pd.DataFrame:

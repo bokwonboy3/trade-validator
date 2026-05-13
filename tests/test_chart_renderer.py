@@ -138,6 +138,36 @@ def test_rsi_helper_in_unit_range():
     assert (valid >= 0).all() and (valid <= 100).all()
 
 
+def test_rsi_matches_wilder_canonical_reference():
+    """Compare against Wilder's own published 14-period example (book p.65).
+
+    Locks in the calculation to ensure parity with Binance / TradingView —
+    those platforms use Wilder smoothing, and the vision model must see
+    the same RSI values the operator sees on Binance's chart panel.
+    """
+    closes = pd.Series([
+        44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84,
+        46.08, 45.89, 46.03, 45.61, 46.28, 46.28, 46.00, 46.03, 46.41, 46.22,
+    ])
+    rsi = chart_renderer._rsi(closes, period=14).to_numpy()
+    # Published Wilder reference values for indices 14..18 inclusive.
+    reference = [70.46, 66.25, 66.48, 69.35, 66.29]
+    for i, expected in enumerate(reference, start=14):
+        assert rsi[i] == pytest.approx(expected, abs=0.01), (
+            f"RSI[{i}] = {rsi[i]:.4f}, expected ~{expected} (Wilder reference)"
+        )
+
+
+def test_rsi_seed_is_at_index_period_not_earlier():
+    """First non-NaN should appear exactly at index ``period`` — earlier
+    indices have no Wilder seed yet and must remain NaN."""
+    closes = pd.Series(np.linspace(100, 110, 30))
+    rsi = chart_renderer._rsi(closes, period=14)
+    # All NaN up to index 13; first defined value at index 14.
+    assert rsi.iloc[:14].isna().all()
+    assert not pd.isna(rsi.iloc[14])
+
+
 def test_trade_levels_to_hlines_skips_none():
     out = chart_renderer._hlines_from_levels(TradeLevels(entry=100.0))
     assert out is not None
