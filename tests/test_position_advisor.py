@@ -140,3 +140,37 @@ def test_user_content_includes_trade_context():
     assert "80000" in body  # entry
     assert "81000" in body  # current
     assert "1.25" in body  # pnl_pct
+
+
+def test_user_content_uses_semantic_features_not_raw_candle_dump():
+    """Phase 8b: advisor sends pre-computed feature sections, NOT a 38-candle
+    raw dump. Guard against regression — the old format used keys like
+    'candles_4h_last_10'; the new format uses 'trend_4h', 'structure_1h', etc."""
+    client = _FakeClient({
+        "action": "HOLD", "confidence": 5, "rationale": "x",
+    })
+    _call(client)
+    body = client.last_user_content
+    # New semantic sections present
+    assert "trend_4h" in body
+    assert "structure_1h" in body
+    assert "microstructure_15m" in body
+    # Old raw-candle keys gone
+    assert "candles_4h_last_10" not in body
+    assert "candles_1h_last_12" not in body
+    assert "candles_15m_last_16" not in body
+
+
+def test_user_content_token_budget_under_2500_chars():
+    """Phase 8b token-budget claim: semantic context must be substantially
+    smaller than the old raw-candle dump. Old format ran ~3000+ chars on
+    realistic data; new format should fit well under 2500 chars even with
+    small verification snapshots."""
+    client = _FakeClient({
+        "action": "HOLD", "confidence": 5, "rationale": "x",
+    })
+    _call(client)
+    body = client.last_user_content
+    assert len(body) < 2500, (
+        f"user_content grew to {len(body)} chars — semantic context bloating?"
+    )

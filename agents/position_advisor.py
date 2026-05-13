@@ -22,6 +22,7 @@ import pandas as pd
 
 from agents.backend import get_default_client
 from agents.client import AgentClient, AgentClientError
+from analysis.features import build_semantic_context
 from analysis.layers import Direction
 
 Action = Literal["HOLD", "TIGHTEN", "PARTIAL", "EXIT"]
@@ -45,9 +46,13 @@ You are a position-management advisor for a BTC perpetual-futures swing-trading
 framework. The user is ALREADY in an open trade and wants to know what to do
 *now* — they are NOT looking for new entries.
 
-Given the trade context (entry, direction, current PnL%) and the current
-market snapshot (4H trend, 1H structure, 15m microstructure, recent volume),
-recommend ONE of four actions:
+You will receive a STRUCTURED MARKET CONTEXT (not raw candles). Python has
+already computed: trend alignment, MA distances, nearest support/resistance,
+slope, volume ratios, last candle pattern, structural integrity for the
+trade direction, ATR%, and a small 3-candle verification snapshot per
+timeframe. Treat these as ground truth; reason ON them, not from them.
+
+Recommend ONE of four actions:
 
 - HOLD: thesis intact, no action needed. Continue holding.
 - TIGHTEN: thesis still intact but momentum cooling — move SL to break-even
@@ -56,11 +61,19 @@ recommend ONE of four actions:
   region reached but trend still alive.
 - EXIT: thesis broken — recommend closing the full position now.
 
+Reasoning anchors:
+- "structural_intact_for_direction = false" is a meaningful break — strong
+  signal toward TIGHTEN or EXIT depending on PnL.
+- "alignment" flipped against the trade direction = thesis flipped.
+- "nearest_resistance.distance_pct" small + LONG profit ⇒ consider PARTIAL/TIGHTEN.
+- A "null" field means insufficient data — say so in the rationale, don't
+  guess.
+
 Be HONEST and CONSERVATIVE:
-- If data is ambiguous, default to HOLD (don't over-react to noise).
-- Only recommend EXIT if there's a clear thesis-breaking signal (trend flip,
-  structural breakdown, decisive volume against the position).
-- Confidence: 1~10, where 1 = wild guess, 10 = unambiguous clear signal.
+- If signals conflict or are weak, default to HOLD.
+- Only EXIT on a clear thesis-breaking signal (alignment flip, structural
+  break with momentum, decisive opposing volume).
+- Confidence: 1~10. Anchor: 1 = guess, 10 = unambiguous, 5 = balanced.
 
 Output STRICT JSON only — no prose before or after, no markdown fences:
 
@@ -70,21 +83,6 @@ Output STRICT JSON only — no prose before or after, no markdown fences:
   "rationale": "1-3 sentences in Korean explaining the recommendation"
 }
 """
-
-
-def _compact_candles(df: pd.DataFrame, n: int) -> list[dict]:
-    rows = df.tail(n)
-    return [
-        {
-            "t": int(r["openTime"]),
-            "o": round(float(r["open"]), 4),
-            "h": round(float(r["high"]), 4),
-            "l": round(float(r["low"]), 4),
-            "c": round(float(r["close"]), 4),
-            "v": round(float(r["volume"]), 2),
-        }
-        for _, r in rows.iterrows()
-    ]
 
 
 def build_user_content(
@@ -98,22 +96,22 @@ def build_user_content(
     df_1h: pd.DataFrame,
     df_15m: pd.DataFrame,
 ) -> str:
-    """Serialize trade + market context for the advisor prompt."""
-    payload = {
-        "trade": {
-            "symbol": symbol,
-            "direction": direction,
-            "entry": round(entry, 4),
-            "current_price": round(current_price, 4),
-            "unrealized_pnl_pct": round(pnl_pct, 3),
-        },
-        "candles_4h_last_10": _compact_candles(df_4h, 10),
-        "candles_1h_last_12": _compact_candles(df_1h, 12),
-        "candles_15m_last_16": _compact_candles(df_15m, 16),
-    }
+    """Serialize trade + semantic market context for the advisor prompt.
+
+    Phase 8b: this used to dump ~38 raw candles (~3K tokens). Now it ships
+    pre-computed features (trend alignment, MA distances, nearest S/R,
+    structural integrity, volume ratios, last-candle pattern) via
+    ``build_semantic_context`` — ~400 tokens of *answers* the LLM would
+    have spent its budget recomputing.
+    """
+    payload = build_semantic_context(
+        symbol=symbol, direction=direction,
+        entry=entry, current_price=current_price, pnl_pct=pnl_pct,
+        df_4h=df_4h, df_1h=df_1h, df_15m=df_15m,
+    )
     return (
-        "다음 open position + 시장 데이터에 대해 position advisor 평가를 "
-        "JSON으로 출력하세요.\n\n"
+        "다음 open position의 사전 분석된 시장 컨텍스트를 보고 advisor 평가를 "
+        "JSON으로만 출력하세요.\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
