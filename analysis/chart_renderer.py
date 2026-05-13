@@ -248,7 +248,11 @@ def render_composite_chart(
         )
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=DPI, bbox_inches="tight")
+    # NOTE: NO ``bbox_inches="tight"`` — mplfinance lays out very wide
+    # auto-formatted date tick labels per panel; combined with tight-bbox
+    # recomputation, matplotlib has been observed to balloon the figure
+    # width by ~100×. Fix the canvas at the configured FIGSIZE instead.
+    fig.savefig(buf, format="png", dpi=DPI)
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode("ascii")
 

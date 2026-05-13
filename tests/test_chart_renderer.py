@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import io
+import struct
 
 import numpy as np
 import pandas as pd
@@ -15,6 +17,13 @@ from analysis.chart_renderer import (
     TradeLevels,
     render_composite_chart,
 )
+
+
+def _png_dimensions(raw: bytes) -> tuple[int, int]:
+    """Parse width/height out of the PNG IHDR chunk (offsets 16-23)."""
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n"
+    width, height = struct.unpack(">II", raw[16:24])
+    return width, height
 
 
 def _synthetic(n: int, step_ms: int, *, base: float = 100.0, seed: int = 42) -> pd.DataFrame:
@@ -51,6 +60,26 @@ def test_render_returns_base64_png_at_target_size():
     assert raw.startswith(b"\x89PNG\r\n\x1a\n"), "output must be a valid PNG"
     # Sanity: image is non-trivial in size (>50 KB for our 1024x1600 target).
     assert len(raw) > 50_000
+
+
+def test_render_actual_pixel_dimensions_exact():
+    """Regression: matplotlib's ``bbox_inches="tight"`` was observed to
+    balloon the canvas to ~99K × 1.3K px when mplfinance laid out wide date
+    tick labels. The renderer must hold to the configured FIGSIZE × DPI."""
+    df_4h = _synthetic(80, 4 * 3600 * 1000)
+    df_1h = _synthetic(80, 3600 * 1000, seed=7)
+    df_15m = _synthetic(80, 15 * 60 * 1000, seed=11)
+    raw = base64.b64decode(
+        render_composite_chart(
+            df_4h, df_1h, df_15m,
+            levels=TradeLevels(entry=100.5, stop_loss=98.0, take_profit=105.0),
+        )
+    )
+    w, h = _png_dimensions(raw)
+    assert (w, h) == (TARGET_WIDTH_PX, TARGET_HEIGHT_PX), (
+        f"PNG dims drifted: got {w}x{h}, expected "
+        f"{TARGET_WIDTH_PX}x{TARGET_HEIGHT_PX}"
+    )
 
 
 def test_target_dimensions_constants_match():
